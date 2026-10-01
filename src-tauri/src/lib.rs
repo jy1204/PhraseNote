@@ -906,6 +906,175 @@ fn collect_db_files(
     }
     Ok(())
 }
+// ========== Android: content:// URI 与本地文件互转 ==========
+#[cfg(target_os = "android")]
+fn content_uri_to_cache(
+    _app: &tauri::AppHandle,
+    uri: &str,
+    filename: &str,
+) -> Result<PathBuf, String> {
+    use jni::objects::{JObject, JValue};
+
+    // 拿到 tauri 初始化好的 JavaVM 和 Activity（Context）
+    let ctx = ndk_context::android_context();
+    let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }.map_err(|e| e.to_string())?;
+    let mut guard = vm
+    .attach_current_thread()
+    .map_err(|e| e.to_string())?;
+    let env = &mut *guard;
+    let activity = unsafe { JObject::from_raw(ctx.context().cast()) };
+
+    // Uri.parse(uri)
+    let juri = env.new_string(uri).map_err(|e| e.to_string())?;
+    let uri_obj = env
+        .call_static_method(
+            "android/net/Uri",
+            "parse",
+            "(Ljava/lang/String;)Landroid/net/Uri;",
+            &[JValue::Object(&juri)],
+        )
+        .map_err(|e| e.to_string())?
+        .l()
+        .map_err(|e| e.to_string())?;
+
+    // activity.getContentResolver()
+    let resolver = env
+        .call_method(
+            &activity,
+            "getContentResolver",
+            "()Landroid/content/ContentResolver;",
+            &[],
+        )
+        .map_err(|e| e.to_string())?
+        .l()
+        .map_err(|e| e.to_string())?;
+
+    // resolver.openInputStream(uriObj)
+    let stream = env
+        .call_method(
+            &resolver,
+            "openInputStream",
+            "(Landroid/net/Uri;)Ljava/io/InputStream;",
+            &[JValue::Object(&uri_obj)],
+        )
+        .map_err(|e| e.to_string())?
+        .l()
+        .map_err(|e| e.to_string())?;
+
+    // 缓存目录 = activity.getCacheDir().getAbsolutePath()
+    let cache_file = env
+        .call_method(&activity, "getCacheDir", "()Ljava/io/File;", &[])
+        .map_err(|e| e.to_string())?
+        .l()
+        .map_err(|e| e.to_string())?;
+    let jpath = env
+        .call_method(&cache_file, "getAbsolutePath", "()Ljava/lang/String;", &[])
+        .map_err(|e| e.to_string())?
+        .l()
+        .map_err(|e| e.to_string())?;
+    let cache_path: String = env
+        .get_string((&jpath).into())
+        .map_err(|e| e.to_string())?
+        .to_string_lossy()
+        .into();
+
+    let target = PathBuf::from(cache_path).join(filename);
+    let mut out = fs::File::create(&target).map_err(|e| e.to_string())?;
+
+    // 循环 stream.read(byte[65536]) 写入本地文件
+    let buf = env.new_byte_array(65536).map_err(|e| e.to_string())?;
+    loop {
+        let n = env
+            .call_method(&stream, "read", "([B)I", &[JValue::Object(&buf)])
+            .map_err(|e| e.to_string())?
+            .i()
+            .map_err(|e| e.to_string())?;
+        if n <= 0 {
+            break;
+        }
+        let bytes = env.convert_byte_array(&buf).map_err(|e| e.to_string())?;
+        use std::io::Write;
+        out.write_all(&bytes[..n as usize])
+            .map_err(|e| e.to_string())?;
+    }
+    env.call_method(&stream, "close", "()V", &[])
+        .map_err(|e| e.to_string())?;
+
+    Ok(target)
+}
+
+
+/// 把本地文件拷贝到 content:// URI 指向的位置（导出用）
+#[cfg(target_os = "android")]
+fn copy_local_to_content_uri(
+    _app: &tauri::AppHandle,
+    uri: &str,
+    local_path: &std::path::Path,
+) -> Result<(), String> {
+    use jni::objects::{JObject, JValue};
+
+    let ctx = ndk_context::android_context();
+    let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }.map_err(|e| e.to_string())?;
+    let mut guard = vm
+    .attach_current_thread()
+    .map_err(|e| e.to_string())?;
+    let env = &mut *guard;
+    let activity = unsafe { JObject::from_raw(ctx.context().cast()) };
+
+    let data = fs::read(local_path).map_err(|e| e.to_string())?;
+
+    let juri = env.new_string(uri).map_err(|e| e.to_string())?;
+    let uri_obj = env
+        .call_static_method(
+            "android/net/Uri",
+            "parse",
+            "(Ljava/lang/String;)Landroid/net/Uri;",
+            &[JValue::Object(&juri)],
+        )
+        .map_err(|e| e.to_string())?
+        .l()
+        .map_err(|e| e.to_string())?;
+
+    let resolver = env
+        .call_method(
+            &activity,
+            "getContentResolver",
+            "()Landroid/content/ContentResolver;",
+            &[],
+        )
+        .map_err(|e| e.to_string())?
+        .l()
+        .map_err(|e| e.to_string())?;
+
+    // resolver.openOutputStream(uriObj)
+    let stream = env
+        .call_method(
+            &resolver,
+            "openOutputStream",
+            "(Landroid/net/Uri;)Ljava/io/OutputStream;",
+            &[JValue::Object(&uri_obj)],
+        )
+        .map_err(|e| e.to_string())?
+        .l()
+        .map_err(|e| e.to_string())?;
+
+    // 分块写入。注意 set_byte_array_region 要 &[i8]，需把 &[u8] 转换
+    let buf = env.new_byte_array(65536).map_err(|e| e.to_string())?;
+    for chunk in data.chunks(65536) {
+        let jbytes: &[i8] =
+            unsafe { std::slice::from_raw_parts(chunk.as_ptr().cast(), chunk.len()) };
+        env.set_byte_array_region(&buf, 0, jbytes)
+            .map_err(|e| e.to_string())?;
+        env.call_method(&stream, "write", "([B)V", &[JValue::Object(&buf)])
+            .map_err(|e| e.to_string())?;
+    }
+    env.call_method(&stream, "flush", "()V", &[])
+        .map_err(|e| e.to_string())?;
+    env.call_method(&stream, "close", "()V", &[])
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
 
 #[tauri::command]
 async fn export_subject_dirs(app: tauri::AppHandle, save_path: String) -> Result<usize, String> {
@@ -928,8 +1097,24 @@ async fn export_subject_dirs(app: tauri::AppHandle, save_path: String) -> Result
         return Err("没有可导出的数据".into());
     }
 
-    // 2. 打包 zip
-    let file = fs::File::create(&save_path).map_err(|e| e.to_string())?;
+    // 2. 安卓 SAF：用户选的位置是 content:// URI，不能直接 File::create
+    //    先把 zip 打包到应用缓存目录，写完后再经 ContentResolver 拷到 URI
+    #[allow(unused_mut)]
+    let mut local_zip_path = save_path.clone();
+
+    #[cfg(target_os = "android")]
+    let mut content_uri: Option<String> = None;
+
+    #[cfg(target_os = "android")]
+    if save_path.starts_with("content://") {
+        content_uri = Some(save_path.clone());
+        let cache = app.path().app_cache_dir().map_err(|e| e.to_string())?;
+        fs::create_dir_all(&cache).map_err(|e| e.to_string())?;
+        local_zip_path = cache.join("export_tmp.zip").to_string_lossy().into_owned();
+    }
+
+    // 3. 打包 zip 到 local_zip_path
+    let file = fs::File::create(&local_zip_path).map_err(|e| e.to_string())?;
     let mut zip = ZipWriter::new(file);
 
     let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
@@ -941,7 +1126,15 @@ async fn export_subject_dirs(app: tauri::AppHandle, save_path: String) -> Result
     }
 
     zip.finish().map_err(|e| e.to_string())?;
-    println!("[export] 已导出 {} 个文件到 {}", files.len(), save_path);
+
+    // 4. 安卓：把缓存里的 zip 拷到用户选的 content:// 位置
+    #[cfg(target_os = "android")]
+    if let Some(uri) = content_uri {
+        copy_local_to_content_uri(&app, &uri, std::path::Path::new(&local_zip_path))?;
+        let _ = fs::remove_file(&local_zip_path);
+    }
+
+    println!("[export] 已导出 {} 个文件到 {}", files.len(), local_zip_path);
     Ok(files.len())
 }
 
@@ -959,13 +1152,26 @@ async fn import_subject_zip(
     let cancel = import_state.cancel.clone();
     cancel.store(false, Ordering::SeqCst);
 
+    // ★ 安卓 SAF：open() 返回的是 content:// URI，先拷到应用缓存变成真实路径
+    #[cfg(target_os = "android")]
+    let zip_path = if zip_path.starts_with("content://") {
+        content_uri_to_cache(&app, &zip_path, "import_tmp.zip")?
+            .to_string_lossy()
+            .into_owned()
+    } else {
+        zip_path
+    };
+
     let file = fs::File::open(&zip_path).map_err(|e| format!("打开 zip 失败: {}", e))?;
     let mut archive = ZipArchive::new(file).map_err(|e| format!("不是有效的 zip: {}", e))?;
 
     let mut duplicates: Vec<DuplicateInfo> = Vec::new();
     let mut imported = 0;
     let mut skipped = 0;
-    let tmp_root = std::env::temp_dir();
+
+    // ★ 安卓上 /tmp 不存在且不可写，统一改用应用缓存目录
+    let tmp_root = app.path().app_cache_dir().map_err(|e| e.to_string())?;
+    fs::create_dir_all(&tmp_root).map_err(|e| e.to_string())?;
 
     for i in 0..archive.len() {
         if cancel.load(Ordering::SeqCst) {
@@ -1062,7 +1268,7 @@ async fn import_subject_zip(
             )
             .map_err(|e| e.to_string())?;
 
-        // ✅ 加索引
+        // 加索引
         dst_conn
             .execute(
                 "CREATE INDEX IF NOT EXISTS idx_keyboard ON phrase_table(keyboard)",
@@ -1070,7 +1276,7 @@ async fn import_subject_zip(
             )
             .map_err(|e| e.to_string())?;
 
-        // ✅ 开事务
+        // 开事务
         let tx = dst_conn
             .unchecked_transaction()
             .map_err(|e| e.to_string())?;
@@ -1117,17 +1323,17 @@ async fn import_subject_zip(
                     });
                 }
                 None => {
-                    // ✅ 用事务的 execute
                     tx.execute(
                         "INSERT INTO phrase_table (type, first_char, keyboard, list) VALUES (?1,?2,?3,?4)",
                         params![t, fc, kb, list],
-                    ).map_err(|e| e.to_string())?;
+                    )
+                    .map_err(|e| e.to_string())?;
                     imported += 1;
                 }
             }
         }
 
-        // ✅ 先提交事务，再释放语句和连接
+        // 先提交事务，再释放语句和连接
         tx.commit().map_err(|e| e.to_string())?;
         drop(stmt);
         drop(src_conn);
@@ -1138,12 +1344,24 @@ async fn import_subject_zip(
         }
     }
 
+    // 清理导入时落在缓存里的临时 zip
+    #[cfg(target_os = "android")]
+    {
+        let cache = app.path().app_cache_dir().map_err(|e| e.to_string())?;
+        let tmp_zip = cache.join("import_tmp.zip");
+        if tmp_zip.exists() {
+            let _ = fs::remove_file(&tmp_zip);
+        }
+    }
+
     Ok(serde_json::json!({
         "imported": imported,
         "skipped": skipped,
         "duplicates": duplicates,
     }))
 }
+
+
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
