@@ -1,0 +1,25 @@
+.menu-bar {
+    background-color: #50d6ff;
+    padding-top: env(safe-area-inset-top);
+}
+.main-board {
+    flex-direction: column;
+}
+.main-board {
+    margin-top: 2px;
+}
+.option-panel ul li {
+    display: inline-block;
+    padding: 10px;
+    margin: 0 2px;
+}
+
+.type {
+    margin-left: 5px;
+}
+
+#add-knowledge {
+    width: 60px;
+    height: 60px;
+    line-height: 60px;
+}

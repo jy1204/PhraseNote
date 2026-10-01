@@ -1,0 +1,76 @@
+[package]
+name = "tauri-app"
+version = "0.1.0"
+description = "A Tauri App"
+authors = ["you"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "tauri_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# ===== 保留（不动）=====
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+tauri-plugin-os = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# ===== 修改：tokio 需要更多 feature =====
+# 原来只有 ["time"]，现在需要 full 或至少加 net/sync/fs/io-util/rt-multi-thread
+tokio = { version = "1", features = ["full"] }
+
+# ===== 新增 =====
+# 局域网服务发现
+mdns-sd = "0.11"
+
+# 内置 HTTP 接收服务器
+axum = { version = "0.7", features = ["multipart"] }
+
+# HTTP 客户端（发送文件）
+reqwest = { version = "0.12", default-features = false, features = [
+    "rustls-tls",
+    "json",
+    "multipart",
+    "stream",
+] }
+
+# 异步工具（StreamExt 等）
+futures-util = "0.3"
+
+# 生成文件/设备唯一 ID
+uuid = { version = "1", features = ["v4"] }
+
+# 获取本机主机名作为设备名（可选，不想用可以删掉）
+hostname = "0.4"
+
+# 获取本机局域网 IP，用于 mDNS 广播
+local-ip-address = "0.6"
+tauri-plugin-dialog = "2"
+
+# ========== 这里新增 zip 库 ==========
+zip = "2"
+tauri-plugin-fs = "2"
+
+# ============ Android 专属依赖 ============
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk-context = "0.1"
+
+# Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true
