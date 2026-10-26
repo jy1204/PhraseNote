@@ -1,0 +1,703 @@
+/* ============================================================
+   PhrasePage 页面样式（可爱 × 科技，mobile-first 响应式）
+   断点：基态手机（<768px 单列）→ ≥768px 桌面（双列）→ ≥1200px 三列
+   颜色统一引用 public/index.css 中的 --pn-* 主题变量，深色自动切换。
+   ============================================================ */
+
+/* 单根包装：Vue3 <transition> 要求组件只有一个根节点，否则路由切换动画静默失效。
+   这里承接原 .content-panel 作为 .main-board 直接子级的 flex:1 语义；
+   #add-knowledge 为 position:fixed，不受布局影响 */
+.phrase-page {
+    flex: 1 1 0;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    overflow: hidden;
+}
+
+.content-panel {
+    flex: 1;
+    display: flex;
+    overflow: hidden;
+}
+
+/* ---------- 左侧字母筛选轨（A-Z / * / #） ----------
+   只保留左边距（12px）让字母 chip 不紧贴窗口最左边缘；
+   chip 与右侧词条卡片之间的 12px 间距由 .content-knowledge 的 padding-left 提供。
+   右 padding 单独留 12px：激活字母的辉光（box-shadow 向外扩散）需要空间，
+   否则会被 overflow-y:scroll 建立的水平裁剪边界硬切掉，衬托不出光晕。 */
+.type {
+    display: inline-block;
+    /* 宽度 = chip(44px) + 左右各 18px：给激活字母的辉光（box-shadow 0 6px 18px，
+       左右各扩散约 18px）留出足够空间，避免被 overflow-y:scroll 建立的水平
+       裁剪边界硬切掉两侧光晕，衬托不出美感 */
+    width: calc(var(--pn-touch-min) + 2 * 18px);
+    height: 100%;
+    overflow-y: scroll;
+    padding: var(--pn-space-2) 18px var(--pn-space-2) 18px;
+}
+.type::-webkit-scrollbar {
+    display: none;
+}
+.type ol {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--pn-space-1);
+}
+.type ol li {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--pn-touch-min);
+    height: var(--pn-touch-min);
+    border-radius: var(--pn-radius-full);
+    background-color: var(--pn-bg-hover);
+    color: var(--pn-text-sub);
+    font-size: var(--pn-text-md);
+    font-weight: 600;
+    cursor: pointer;
+    transition: background-color var(--pn-duration-fast) var(--pn-ease-standard),
+                color var(--pn-duration-fast) var(--pn-ease-standard),
+                transform var(--pn-duration-fast) var(--pn-ease-bounce),
+                box-shadow var(--pn-duration-fast) var(--pn-ease-standard);
+}
+.type ol li:hover {
+    background-color: var(--pn-primary-soft-strong);
+    color: var(--pn-primary-deep);
+    transform: translateY(-2px);
+}
+.type ol li:active {
+    transform: scale(0.92);
+}
+/* 激活字母：亮蓝底 + 深海军蓝字（对比度策略）+ 辉光 */
+.type ol li.active,
+.type .active {
+    background-color: var(--pn-primary);
+    color: var(--pn-primary-contrast);
+    box-shadow: var(--pn-glow-fab);
+}
+
+/* ---------- 右侧词条列表区 ---------- */
+.content-panel .content-knowledge {
+    position: relative;                     /* 底部渐隐遮罩的定位基准 */
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    padding: var(--pn-space-2) var(--pn-space-3) var(--pn-space-2) 0;
+    min-width: 0;
+}
+/* 底部渐隐遮罩：滚动条已全局隐藏，用它暗示“下方还有内容可滚”；
+   滚到底时 JS 摘掉 .has-more，遮罩淡出。pointer-events:none 保证不挡点击。 */
+.content-knowledge::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 44px;
+    z-index: 2;
+    pointer-events: none;
+    opacity: 0;
+    background: linear-gradient(
+        to bottom,
+        rgba(var(--pn-fade-rgb), 0) 0%,
+        rgba(var(--pn-fade-rgb), 0.82) 58%,
+        rgba(var(--pn-fade-rgb), 1) 100%
+    );
+    transition: opacity var(--pn-duration-base) var(--pn-ease-standard);
+}
+.content-knowledge.has-more::after {
+    opacity: 1;
+}
+
+/* ---------- 词条卡片网格 ---------- */
+.content-knowledge .grammar {
+    flex: 1;
+    min-width: 0;                              /* 允许网格横向收缩到容器宽，避免窄桌面下右列溢出被裁 */
+    display: grid;
+    gap: var(--pn-space-3);
+    padding-top: 12px;                         /* 初始/兜底：scrollTop=0 时顶部留白 12px；滚动时由 JS 动态互补 margin/padding */
+    grid-template-columns: minmax(0, 1fr);     /* 基态：手机单列；minmax(0,…) 让轨道可缩到 0，内容在卡片内换行 */
+    align-content: flex-start;
+    overflow-y: auto;
+}
+/* 顶部留白（margin-top / padding-top）由 JS 在 updateListFade() 中随 scrollTop 实时互补：
+   0 → margin0/padding12；≥12 → margin12/padding0；中间线性互补，总和恒为 12px。故此处不再写静态值。 */
+.content-knowledge .grammar::-webkit-scrollbar {
+    display: none;
+}
+
+/* 知识卡片：大圆角 + 柔和投影 + 悬停上浮 */
+.grammar .knowledge {
+    padding: var(--pn-space-3) var(--pn-space-4);
+    border-radius: var(--pn-radius-lg);
+    border: 1px solid var(--pn-border-soft);
+    color: var(--pn-text-app);
+    background-color: var(--pn-bg-card);
+    box-shadow: var(--pn-shadow-sm);
+    transition: transform var(--pn-duration-fast) var(--pn-ease-bounce),
+                box-shadow var(--pn-duration-fast) var(--pn-ease-standard),
+                border-color var(--pn-duration-fast) var(--pn-ease-standard);
+}
+.grammar .knowledge:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--pn-shadow-card-hover);
+    border-color: var(--pn-primary-soft-strong);
+}
+
+/* 卡片标题行：关键词（显示体）+ 右侧操作图标 */
+.grammar .knowledge h1 {
+    display: flex;
+    position: relative;
+    align-items: center;
+    padding-right: 64px;
+    padding-bottom: var(--pn-space-2);
+    line-height: 1.2;
+    border-bottom: 1px solid var(--pn-border-soft);
+    margin-bottom: var(--pn-space-2);
+    font-family: var(--pn-font-display);
+    font-size: var(--pn-text-xl);
+    font-weight: 400;
+    color: var(--pn-text-strong);
+}
+.grammar .knowledge h1 div {
+    position: absolute;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--pn-space-1);
+    font-size: 22px;
+    right: 0;
+    top: 50%;
+    cursor: pointer;
+    transform: translateY(-50%);
+}
+.grammar .knowledge h1 div .el-icon {
+    border-radius: var(--pn-radius-full);
+    padding: 4px;
+    transition: color var(--pn-duration-fast) var(--pn-ease-standard),
+                background-color var(--pn-duration-fast) var(--pn-ease-standard);
+}
+.grammar .knowledge h1 div .el-icon:first-child {
+    color: var(--pn-text-muted);
+}
+.grammar .knowledge h1 div .el-icon:first-child:hover {
+    color: var(--pn-danger);
+    background-color: var(--pn-danger-soft);
+}
+.grammar .knowledge h1 div .el-icon:last-child {
+    color: var(--pn-text-muted);
+}
+.grammar .knowledge h1 div .el-icon:last-child:hover {
+    color: var(--pn-primary-deep);
+    background-color: var(--pn-primary-soft);
+}
+
+/* 短语 pill：圆角标签，悬停染蓝 */
+.grammar .knowledge>p {
+    border-radius: var(--pn-radius-md);
+    background-color: var(--pn-bg-tag);
+    padding: var(--pn-space-2) var(--pn-space-3);
+    margin-bottom: var(--pn-space-2);
+    transition: background-color var(--pn-duration-fast) var(--pn-ease-standard);
+}
+.grammar .knowledge>p:hover {
+    background-color: var(--pn-primary-soft);
+}
+.grammar .knowledge>p:last-child {
+    margin-bottom: 0;
+}
+
+/* 滚动懒加载：底部“加载中/没有更多了”提示，跨整行居中 */
+.grammar .load-tip {
+    grid-column: 1 / -1;
+    text-align: center;
+    color: var(--pn-text-faint);
+    font-size: var(--pn-text-sm);
+    padding: var(--pn-space-3) 0;
+}
+
+/* 短语 / 译文各自成块，并保留 textarea 中的换行（white-space: pre-wrap） */
+.grammar .knowledge>p>span:first-child {
+    font-size: var(--pn-text-md);
+    font-weight: 600;
+    color: var(--pn-primary-deep);
+}
+.grammar .knowledge>p>span {
+    display: block;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+.grammar .knowledge>p>span.translate-text {
+    margin-top: var(--pn-space-1);
+    color: var(--pn-text-sub);
+    font-size: var(--pn-text-base);
+}
+
+/* ≥768px 桌面：双列 */
+@media screen and (min-width: 768px) {
+    .content-knowledge .grammar {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+/* ≥1200px 宽屏：三列 */
+@media screen and (min-width: 1200px) {
+    .content-knowledge .grammar {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+}
+
+/* ---------- 空状态 ---------- */
+#empty-box {
+    flex: 1;
+    width: 100%;
+    height: 100%;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+/* 空状态文字与插画跟随主题（el-empty 默认用 Element Plus 自带灰阶，深浅主题下不变色） */
+#empty-box .el-empty__description {
+    color: var(--pn-text-muted);
+}
+#empty-box .empty-illustration {
+    width: 120px;
+    height: 100px;
+}
+
+/* ---------- 添加 / 编辑词条表单面板 ----------
+   基态（<768px）：底部抽屉贴底上滑；≥768px：居中弹窗（断点规则见本段末尾） */
+.add-content-panel {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    justify-content: center;
+    align-items: flex-end;
+    background-color: var(--pn-overlay-soft);
+    z-index: 20;
+}
+.add-content-panel .panel {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    /* 高度自适应内容：短语条目少时抽屉只占必要高度（原生 sheet 手感），
+       条目多时由卡片 body 的 max-height 兜住，永不超出 max-height 92dvh。
+       注意不能用 height: auto + 下方 flex:1/flex-basis:0，否则卡片区基准为 0 被压扁 */
+    height: 80vh;             /* 双声明兜底：老 WebView 不认 dvh 时退回 vh */
+    height: 80dvh;
+    color: var(--pn-text-panel);
+    border-radius: var(--pn-radius-2xl) var(--pn-radius-2xl) 0 0;
+    background-color: var(--pn-bg-elevated);
+    box-shadow: var(--pn-shadow-pop);
+    overflow: hidden;
+}
+/* 抽屉顶部抓手（grabber）：手机端底部抽屉的可拖拽手柄。
+   视觉小横条由 ::before 呈现，外层是更大的触摸热区（≥ 触控最小尺寸）。
+   桌面为居中弹窗，grabber 在 ≥768px 断点隐藏，不启用拖拽。 */
+.panel-grabber {
+    flex: 0 0 auto;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    width: 100%;
+    height: 28px;
+    margin-top: var(--pn-space-1);
+    background: transparent;
+    border: none;
+    cursor: grab;
+    touch-action: none;           /* 抓手区不参与页面滚动，手势接管 */
+}
+.panel-grabber::before {
+    content: "";
+    width: 40px;
+    height: 4px;
+    border-radius: var(--pn-radius-full);
+    background-color: var(--pn-border-strong);
+}
+.panel-grabber:active { cursor: grabbing; }
+/* 拖拽中关闭 transform 过渡，让面板 1:1 跟手；松手移除后回弹/离场动画生效 */
+.add-content-panel .panel { transition: transform var(--pn-duration-base) var(--pn-ease-standard); }
+.add-content-panel .panel.dragging { transition: none; }
+/* 拖拽收起时改用自定义下滑离场，禁用标准 reverse slide-up（防止从拖拽位置弹回再滑出） */
+.pn-overlay-leave-active .panel.drag-closing { animation: none; }
+
+/* 表单容器：flex column 全高——字段区 auto + 短语卡片区 flex:1 + 底栏 auto，
+   取代原来的 calc(100% - 55px) 与 .form-buttons 绝对定位 hack */
+.panel>form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--pn-space-3);
+    flex: 1;
+    min-height: 0;
+    padding: var(--pn-space-5);
+    padding-bottom: 0;
+    width: 100%;
+    /* 矮窗口兜底：面板高度被压缩到不足容纳全部内容时，form 整体可滚动，
+       保证上半部分（类型/关键词）始终能滚动查看，不会被 overflow:hidden 硬裁掉 */
+    overflow-y: auto;
+    overflow-x: hidden;
+}
+/* label 置顶后间距由 flex gap 统一控制，清掉 EP 默认的 18px */
+.panel>form .el-form-item { margin-bottom: 0; }
+
+/* 类型 + 关键词行：基态竖排，≥768px 横排 */
+.panel>form .form-row {
+    display: flex;
+    flex-direction: column;
+    gap: var(--pn-space-3);
+    flex: 0 0 auto;
+}
+.panel>form .form-row .form-item-type { flex: 0 0 auto; }
+.panel>form .form-row .keyboard-box { flex: 1 1 auto; min-width: 0; }
+/* 统一「类型」下拉框与「关键词」输入框高度：EP 的 el-select__wrapper 用 min-height、
+   el-input__wrapper 用固定 height，二者并排时高度不一致。这里显式锁到同一控制高度 */
+.panel>form .form-row .form-item-type .el-select__wrapper,
+.panel>form .form-row .keyboard-box .el-input__wrapper {
+    height: var(--pn-control-h);
+    min-height: var(--pn-control-h);
+    border-radius: var(--pn-radius-md);
+}
+/* 类型下拉浮层：整体改用 --pn-* 令牌上色（与设置窗口一致）。
+   默认直接吃 EP 的 --el-bg-color-overlay / --el-fill-color-light，在非默认配色（尤其深色）下
+   会掉成近乎黑的旧色、又无边框圆角包裹，观感像「黑底溢出」且与设置下拉不一致。
+   这里显式挂到 --pn-* 上：深浅主题与所有配色统一跟随，选项留白+圆角消除溢出。 */
+.add-select-popper.el-popper { z-index: 10002 !important; }
+.el-popper.add-select-popper,
+.el-popper.add-select-popper.is-light {
+    background: var(--pn-bg-elevated);
+    border: 1px solid var(--pn-border-soft);
+    border-radius: var(--pn-radius-xl);
+    box-shadow: var(--pn-shadow-pop);
+    color: var(--pn-text-panel);
+}
+.el-popper.add-select-popper .el-popper__arrow::before,
+.el-popper.add-select-popper.is-light .el-popper__arrow::before {
+    background: var(--pn-bg-elevated);
+    border: 1px solid var(--pn-border-soft);
+}
+.add-select-popper .el-select-dropdown__item {
+    height: 38px;
+    line-height: 38px;
+    margin: var(--pn-space-1) var(--pn-space-2);
+    padding: 0 var(--pn-space-3);
+    border-radius: var(--pn-radius-md);
+    color: var(--pn-text-panel);
+    font-weight: 500;
+    transition: background-color var(--pn-duration-fast) var(--pn-ease-standard),
+                color var(--pn-duration-fast) var(--pn-ease-standard);
+}
+.add-select-popper .el-select-dropdown__item.is-hovering,
+.add-select-popper .el-select-dropdown__item:hover {
+    background-color: var(--pn-primary-soft-strong);
+    color: var(--pn-primary-deep);
+}
+.add-select-popper .el-select-dropdown__item.is-selected {
+    background-color: var(--pn-primary-soft-strongest);
+    color: var(--pn-primary-deep);
+    font-weight: 700;
+}
+
+/* 短语卡片区：吃掉剩余高度。
+   注意：label-position="top" 会使 .el-form-item 变为 display:block，
+   必须显式补 flex，否则 __content 不再是被拉伸的 flex item，
+   .el-card 的 height:100% 链条断裂、内部滚动失效 */
+/* 短语卡片区：flex-grow 只在有剩余空间时才拉高（桌面定高弹窗填满），
+   基态抽屉高度随内容走；flex-basis 必须留 auto，用 0 会让卡片塌成 0 高 */
+.panel>form .phrase-form-item {
+    flex: 1 1 auto;
+    /* 保证卡片区在矮窗口下不被完全压扁（保留最小可用高度），
+       配合 form 的 overflow-y:auto 触发整体滚动而非硬裁 */
+    min-height: 180px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+.panel>form .phrase-form-item>.el-form-item__content {
+    flex: 1;
+    min-height: 0;
+    align-items: stretch;
+}
+.panel>form .phrase-form-item>.el-form-item__content>.el-card {
+    /* el-card 本身不是 flex 容器，必须显式纵向 flex：
+       header 固定 + body 吃掉剩余高度，body 内的 .demo-collapse 才能拿到确定高度并滚动 */
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    overflow: hidden;
+}
+
+.panel>form .el-card { border-radius: var(--pn-radius-lg); }
+.panel>form .el-card__header {
+    position: relative;
+    flex: 0 0 auto;
+    padding: var(--pn-space-2) var(--pn-space-3);
+}
+.panel>form .el-card__body {
+    flex: 1 1 auto;
+    padding: 0 var(--pn-space-3);
+    overflow-y: auto;
+    overflow-x: hidden;
+}
+.panel>form .el-card__body .demo-collapse {
+    height: 100%;
+    overflow-y: auto;
+}
+.panel>form .el-card__body .demo-collapse::-webkit-scrollbar { display: none; }
+.panel>form .el-card__body .demo-collapse>.el-collapse {
+    height: 100%;
+    border: 0;
+}
+.panel>form .el-card__body .demo-collapse .el-textarea__inner {
+    resize: none;
+    border-radius: var(--pn-radius-md);
+}
+.panel>form .el-card__body .demo-collapse .el-textarea__inner::-webkit-scrollbar { display: none; }
+
+/* “全部清空”：原 13px 小钮 → 36px 高胶囊 */
+.panel>form .el-card__header .all-delete {
+    position: absolute;
+    top: 50%;
+    right: calc(var(--pn-control-h) + var(--pn-space-4));
+    transform: translateY(-50%);
+    display: inline-flex;
+    align-items: center;
+    height: 36px;
+    padding: 0 var(--pn-space-4);
+    border-radius: var(--pn-radius-full);
+    font-size: var(--pn-text-base);
+    font-weight: 600;
+    color: var(--pn-text-invert);
+    background-color: var(--pn-danger-fill);
+    cursor: pointer;
+    transition: background-color var(--pn-duration-fast) var(--pn-ease-standard),
+                transform var(--pn-duration-fast) var(--pn-ease-bounce);
+}
+.panel>form .el-card__header .all-delete:hover { background-color: var(--pn-danger-hover); }
+.panel>form .el-card__header .all-delete:active { transform: translateY(-50%) scale(0.95); }
+
+/* 卡片头部“新增一行”：原裸 el-icon → 40px 圆形触控按钮 */
+.panel>form .el-card__header .card-add-btn {
+    position: absolute;
+    top: 50%;
+    right: var(--pn-space-2);
+    transform: translateY(-50%);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--pn-control-h);
+    height: var(--pn-control-h);
+    border-radius: var(--pn-radius-full);
+    color: var(--pn-primary-deep);
+    background-color: var(--pn-primary-soft);
+    cursor: pointer;
+    transition: background-color var(--pn-duration-fast) var(--pn-ease-standard),
+                color var(--pn-duration-fast) var(--pn-ease-standard),
+                transform var(--pn-duration-fast) var(--pn-ease-bounce);
+}
+.panel>form .el-card__header .card-add-btn:hover {
+    background-color: var(--pn-primary-strong);
+    color: var(--pn-text-invert);
+    transform: translateY(-50%) scale(1.08);
+}
+.panel>form .el-card__header .card-add-btn:active { transform: translateY(-50%) scale(0.94); }
+.panel>form .el-card__header .card-add-btn .el-icon { font-size: 20px; }
+
+/* 每条短语右上角“删除”：原裸 el-icon → 40px 圆形触控按钮 */
+.panel>form .el-card__body .phrase-content-box { position: relative; }
+.panel>form .el-card__body .phrase-content-box .phrase-del-btn {
+    position: absolute;
+    top: var(--pn-space-1);
+    right: var(--pn-space-1);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--pn-control-h);
+    height: var(--pn-control-h);
+    color: var(--pn-text-muted);
+    cursor: pointer;
+    z-index: 1;
+    border-radius: var(--pn-radius-full);
+    transition: color var(--pn-duration-fast) var(--pn-ease-standard),
+                background-color var(--pn-duration-fast) var(--pn-ease-standard),
+                transform var(--pn-duration-fast) var(--pn-ease-bounce);
+}
+.panel>form .el-card__body .phrase-content-box .phrase-del-btn:hover {
+    color: var(--pn-danger);
+    background-color: var(--pn-danger-soft);
+    transform: scale(1.08);
+}
+.panel>form .el-card__body .phrase-content-box .phrase-del-btn:active { transform: scale(0.92); }
+.panel>form .el-card__body .phrase-content-box .phrase-del-btn .el-icon { font-size: 18px; }
+/* collapse 标题行右侧给 40px 删除按钮留位（标题行高 48px，按钮 4px 贴边恰好放下） */
+.panel>form .el-card__body .el-collapse-item__header { padding-right: 56px; }
+
+/* 关键词输入框：右侧预留清空按钮位置（清空钮 32→36px） */
+.panel>form .keyboard-input .el-input__wrapper {
+    padding-right: 44px;
+    border-radius: var(--pn-radius-md);
+}
+.panel>form .keyboard-box .el-form-item__content { position: relative; }
+.panel>form .keyboard-box .el-form-item__content .keyboard-clear {
+    position: absolute;
+    top: 50%;
+    right: var(--pn-space-2);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    transform: translateY(-50%);
+    color: var(--pn-text-muted);
+    cursor: pointer;
+    border-radius: var(--pn-radius-full);
+    transition: color var(--pn-duration-fast) var(--pn-ease-standard),
+                background-color var(--pn-duration-fast) var(--pn-ease-standard);
+}
+.panel>form .keyboard-box .el-form-item__content .keyboard-clear:hover {
+    color: var(--pn-danger);
+    background-color: var(--pn-danger-soft);
+}
+.panel>form .keyboard-box .el-form-item__content .keyboard-clear .el-icon { font-size: 18px; }
+
+/* 底部操作区：绝对定位 hack → 流内 flex 子元素，通栏底栏 + 安全区内边距
+   （抽屉贴底时避开系统手势条） */
+.panel .form-buttons {
+    flex: 0 0 auto;
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--pn-space-3);
+    margin: 0 calc(-1 * var(--pn-space-5));
+    padding: var(--pn-space-3) var(--pn-space-5);
+    padding-bottom: calc(var(--pn-space-3) + env(safe-area-inset-bottom));
+    border-top: 1px solid var(--pn-border-soft);
+    background-color: var(--pn-bg-elevated);
+}
+/* 提交按钮：基态（手机）全宽 48px */
+.panel .form-buttons .el-button {
+    width: 100%;
+    height: 48px;
+    border-radius: var(--pn-radius-full);
+    font-size: 15px;
+    font-weight: 600;
+    transition: transform var(--pn-duration-fast) var(--pn-ease-bounce),
+                filter var(--pn-duration-fast) var(--pn-ease-standard);
+}
+.panel .form-buttons .el-button:hover { filter: brightness(1.12); }
+.panel .form-buttons .el-button:active { transform: scale(0.97); }
+
+/* 面板关闭按钮：36→44px 触控 */
+#close-panel {
+    position: absolute;
+    top: var(--pn-space-3);
+    right: var(--pn-space-3);
+    font-size: var(--pn-text-xl);
+    width: var(--pn-touch-min);
+    height: var(--pn-touch-min);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+    border-radius: 50%;
+    background-color: var(--pn-bg-hover);
+    color: var(--pn-text-sub);
+    cursor: pointer;
+    z-index: 1;
+    transition: background-color var(--pn-duration-fast) var(--pn-ease-standard),
+                color var(--pn-duration-fast) var(--pn-ease-standard),
+                transform var(--pn-duration-fast) var(--pn-ease-bounce);
+}
+#close-panel:hover {
+    background-color: var(--pn-danger-soft);
+    color: var(--pn-danger);
+    transform: rotate(90deg);
+}
+
+/* ≥768px：居中弹窗 + form-row 横排 + 提交钮回常规尺寸 */
+@media screen and (min-width: 768px) {
+    /* 弹窗四周留安全边距，并给顶部额外让出菜单栏高度：
+       面板是 position:fixed 居中于整个视口，但顶部菜单栏（z-index:10）会盖住
+       面板上半部分——尤其是极矮窗口下面板几乎占满视口高度时，类型/关键词标签
+       与关闭按钮会被菜单栏挡掉。顶部 padding 避开菜单栏，上下安全边距防溢出。 */
+    .add-content-panel {
+        align-items: center;
+        padding: calc(var(--pn-menu-h) + var(--pn-space-2)) var(--pn-space-4) var(--pn-space-4);
+    }
+    .add-content-panel .panel {
+        width: min(92vw, 680px);
+        /* 高度 = min(640px, 视口高 - 上下安全边距 - 菜单栏)：正常窗口维持 640px 定高弹窗，
+           极矮窗口自动收缩到视口内，面板顶部（类型/关键词）不再被顶出屏幕 */
+        height: min(640px, calc(100dvh - var(--pn-menu-h) - 3 * var(--pn-space-4)));
+        height: min(640px, calc(100vh - var(--pn-menu-h) - 3 * var(--pn-space-4)));
+        border-radius: var(--pn-radius-2xl);
+    }
+    .panel-grabber { display: none; }
+    /* 桌面：弹窗定高，卡片 body 交给 flex 分配（解除基态的 38dvh 上限） */
+    .panel>form .el-card__body { max-height: none; }
+    .panel>form .form-row { flex-direction: row; align-items: flex-start; }
+    .panel>form .form-row .form-item-type { flex: 0 0 200px; width: 200px; }
+    /* 右上角关闭按钮（44px 触控）与横排的关键词输入框在纵向区间重叠，
+       给 form-row 右侧让出关闭按钮宽度，避免非手机尺寸下 × 压住关键词输入框边框 */
+    .panel>form .form-row { padding-right: calc(var(--pn-touch-min) + var(--pn-space-2)); }
+    .panel .form-buttons .el-button {
+        width: auto;
+        min-width: 140px;
+        height: var(--pn-touch-min);
+        padding: 0 var(--pn-space-5);
+    }
+}
+/* ≥1200px：面板加宽 + 短语/译文两个 textarea 并排 */
+@media screen and (min-width: 1200px) {
+    .add-content-panel .panel { width: min(92vw, 760px); }
+    .panel>form .el-card__body .el-collapse-item__content {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: var(--pn-space-3);
+    }
+    .panel>form .el-card__body .el-collapse-item__content .el-textarea { min-width: 0; }
+}
+
+/* ---------- 右下角悬浮添加按钮（FAB） ---------- */
+#add-knowledge {
+    position: fixed;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    right: calc(var(--pn-space-5) + env(safe-area-inset-right));
+    bottom: calc(var(--pn-space-5) + env(safe-area-inset-bottom));
+    width: 60px;
+    height: 60px;
+    text-align: center;
+    border-radius: var(--pn-radius-full);
+    background-image: var(--pn-btn-grad);
+    color: var(--pn-text-invert);
+    font-size: 32px;
+    font-weight: 700;
+    line-height: 1;
+    cursor: pointer;
+    z-index: 4;
+    box-shadow: var(--pn-glow-fab);
+    animation: pn-breathe 2.6s var(--pn-ease-standard) infinite;
+    transition: transform var(--pn-duration-fast) var(--pn-ease-bounce);
+}
+#add-knowledge:hover {
+    transform: scale(1.08);
+}
+#add-knowledge:active {
+    transform: scale(0.92);
+}
+/* ≥768px 桌面：略小 */
+@media screen and (min-width: 768px) {
+    #add-knowledge {
+        width: var(--pn-fab-size);
+        height: var(--pn-fab-size);
+        font-size: 28px;
+    }
+}
+
+/* ≥1600px：词条卡片四列 */
+@media screen and (min-width: 1600px) {
+    .content-knowledge .grammar {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+}

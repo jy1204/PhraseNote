@@ -1,0 +1,169 @@
+/* ============================================================
+   NoteEditor 全屏编辑视图样式（可爱 × 科技）
+   颜色统一引用 public/index.css 中的 --pn-* 主题变量，深色自动切换。
+   ============================================================ */
+
+.note-editor {
+    /* 整屏浮层：position:fixed + inset:0 覆盖整个视口（含菜单栏与侧边导航） */
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    box-sizing: border-box;
+    background-color: var(--pn-bg-app);
+    color: var(--pn-text);
+}
+
+/* 顶部：返回 + 标题 + 保存（含安全区） */
+.note-editor .editor-header {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: var(--pn-space-2);
+    padding: calc(var(--pn-space-2) + env(safe-area-inset-top)) var(--pn-space-3) var(--pn-space-2);
+    color: var(--pn-text);
+    /* 与下方工具栏同源 --pn-bg-elevated：确保深浅主题、樱花粉/科技蓝都跟随，
+       避免半透明 --pn-glass-bg 叠加 blur 后在不同主题下串色 */
+    background-color: var(--pn-bg-elevated);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--pn-border-soft);
+}
+.note-editor .editor-back {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+    width: var(--pn-touch-min);
+    height: var(--pn-touch-min);
+    font-size: 24px;
+    line-height: 1;
+    border-radius: var(--pn-radius-md);
+    color: var(--pn-text-sub);
+    transition: background-color var(--pn-duration-fast) var(--pn-ease-standard),
+                color var(--pn-duration-fast) var(--pn-ease-standard),
+                transform var(--pn-duration-fast) var(--pn-ease-bounce);
+}
+.note-editor .editor-back:hover {
+    background-color: var(--pn-primary-soft);
+    color: var(--pn-primary-deep);
+}
+.note-editor .editor-back:active {
+    transform: scale(0.92);
+}
+
+.note-editor .editor-title {
+    flex: 1;
+    min-width: 0;
+    font-size: var(--pn-text-md);
+    font-weight: 400;
+    font-family: var(--pn-font-display);
+    color: var(--pn-text-strong);
+    white-space: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+    /* marquee 容器：flex 横排让两份 .marquee-chunk 首尾相接，
+       模板源码里的换行/缩进空白会被 flex 丢弃，保证无缝回卷宽度精确 */
+    display: flex;
+}
+.note-editor .editor-title::-webkit-scrollbar {
+    display: none;
+}
+
+/* ---------- marquee 无缝跑马灯：单份文本块（与 NotePage 同构） ---------- */
+.note-editor .marquee-chunk {
+    flex: 0 0 auto;
+    white-space: nowrap;
+}
+.note-editor .marquee-chunk + .marquee-chunk {
+    margin-left: 2em;
+}
+/* 默认隐藏副本：短标题只显示一份；超宽时由 v-marquee 加 .marquee-active 显示 */
+.note-editor .editor-title:not(.marquee-active) .marquee-chunk + .marquee-chunk {
+    display: none;
+}
+
+/* 右上角：保存按钮（深蓝渐变胶囊 + 辉光） */
+.note-editor .editor-save {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--pn-space-1);
+    height: 36px;
+    padding: 0 var(--pn-space-4);
+    border-radius: var(--pn-radius-full);
+    cursor: pointer;
+    user-select: none;
+    color: var(--pn-text-invert);
+    font-size: var(--pn-text-base);
+    font-weight: 700;
+    background-image: var(--pn-btn-grad);
+    box-shadow: var(--pn-glow-fab);
+    transition: filter var(--pn-duration-fast) var(--pn-ease-standard),
+                transform var(--pn-duration-fast) var(--pn-ease-bounce);
+}
+.note-editor .editor-save .el-icon {
+    font-size: 17px;
+}
+.note-editor .editor-save:hover {
+    filter: brightness(1.1);
+}
+.note-editor .editor-save:active {
+    transform: scale(0.94);
+}
+
+/* 编辑区：占满工具栏下方的剩余空间 */
+.note-editor .editor-body {
+    flex: 1 1 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+/* ============================================================
+   富文本编辑器（wangEditor v5）主题跟随 --pn-* 变量
+   注意：工具栏图标为 data-URI SVG，颜色由 svg{fill} 统一接管，
+   不改动组件内部结构，仅做底色 / 圆角 / hover 氛围。
+   ============================================================ */
+.note-editor .w-e-toolbar {
+    background-color: var(--pn-bg-elevated);
+    color: var(--pn-text);
+    border-color: var(--pn-border) !important;
+}
+.note-editor .w-e-toolbar svg {
+    fill: var(--pn-text) !important;
+}
+/* 工具栏按钮 hover：浅蓝底 + 圆角 */
+.note-editor .w-e-bar-item button:hover {
+    background-color: var(--pn-primary-soft);
+    border-radius: var(--pn-radius-sm);
+}
+.note-editor .w-e-text-container {
+    background-color: var(--pn-bg-app);
+    color: var(--pn-text);
+    border-color: var(--pn-border) !important;
+}
+/* 正文阅读区左右留白 */
+.note-editor .w-e-text {
+    color: var(--pn-text);
+    padding: 0 var(--pn-space-4);
+}
+.note-editor .w-e-text-container .w-e-placeholder {
+    color: var(--pn-text-placeholder);
+}
+/* 链接等模态框：大圆角 + 柔和投影 */
+.note-editor .w-e-modal {
+    border-radius: var(--pn-radius-lg);
+    box-shadow: var(--pn-shadow-pop);
+    overflow: hidden;
+}
+.note-editor .w-e-modal button {
+    border-radius: var(--pn-radius-md);
+}

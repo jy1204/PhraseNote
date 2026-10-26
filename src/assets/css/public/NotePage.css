@@ -1,0 +1,535 @@
+/* ============================================================
+   NotePage 页面样式（可爱 × 科技，mobile-first 响应式）
+   布局：基态手机竖排工具条（48px）→ ≥768px 桌面维持竖排水准；
+   颜色统一引用 public/index.css 中的 --pn-* 主题变量，深色自动切换。
+   ============================================================ */
+
+.note-page {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+/* 主内容行容器：左侧工具面板 + 右侧主区（横向并排） */
+.note-page .note-body {
+    flex: 1 1 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: row;
+    overflow: hidden;
+}
+/* 右侧主区：搜索 + 收藏夹树，占满工具面板右侧剩余宽度。
+   padding-top 让搜索框与左侧工具条顶部对齐（工具条自身有 8px 内边距），
+   否则整行会紧贴菜单栏下方看起来“没有上边距”。 */
+.note-page .note-main {
+    flex: 1 1 0;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    padding-top: var(--pn-space-2);
+    /* 与左侧对称：右侧留白，避免搜索框聚焦辉光 / 清空按钮贴边被 overflow:hidden 裁掉 */
+    padding-right: var(--pn-space-3);
+}
+
+/* ---------- 左侧竖排工具条（添加目录 / 管理） ----------
+   与 PhrasePage 的 .type 字母轨同构：只保留左边距，右侧间距交给 .note-main 的
+   padding-left，保证两个页面的“内容左边界”一致，切换页面无横向跳动。
+   右 padding 单独留 12px：激活按钮的辉光（box-shadow 向外扩散）需要空间，
+   否则被 overflow-y:scroll 的水平裁剪边界硬切掉，衬托不出光晕。 */
+.note-page .note-side {
+    /* 宽度 = 按钮(44px) + 左右各 18px：给激活按钮的辉光（box-shadow 0 6px 18px）
+       留出空间，避免被 overflow-y:scroll 的水平裁剪边界切掉两侧光晕 */
+    width: calc(var(--pn-touch-min) + 2 * 18px);
+    height: 100%;
+    overflow-y: scroll;
+    padding: var(--pn-space-2) 18px var(--pn-space-2) 18px;
+}
+.note-page .note-side::-webkit-scrollbar {
+    display: none;
+}
+.note-page .side-item {
+    width: var(--pn-touch-min);
+    height: var(--pn-touch-min);
+    border-radius: var(--pn-radius-full);
+    background-color: var(--pn-bg-hover);
+    color: var(--pn-text-sub);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: var(--pn-space-1) auto;
+    cursor: pointer;
+    transition: background-color var(--pn-duration-fast) var(--pn-ease-standard),
+                color var(--pn-duration-fast) var(--pn-ease-standard),
+                box-shadow var(--pn-duration-fast) var(--pn-ease-standard),
+                transform var(--pn-duration-fast) var(--pn-ease-bounce);
+}
+.note-page .side-item .el-icon {
+    font-size: 22px;
+}
+.note-page .side-item:hover {
+    background-color: var(--pn-primary-soft-strong);
+    color: var(--pn-primary-deep);
+    transform: translateY(-2px);
+}
+.note-page .side-item:active {
+    transform: scale(0.92);
+}
+/* 激活（管理模式开启）：深蓝渐变 + 反白 + 辉光 */
+.note-page .side-item.active {
+    background-image: var(--pn-btn-grad);
+    color: var(--pn-text-invert);
+    box-shadow: var(--pn-glow-fab);
+}
+
+/* ---------- 顶部搜索行 ---------- */
+.note-page .tools {
+    display: flex;
+    align-items: center;
+    margin-bottom: var(--pn-space-3);
+}
+/* 搜索框外观统一由 index.css 的 .pn-search 共享规范提供，这里只保留页面布局差异 */
+.note-page .search-title {
+    flex: 1;
+    min-width: 0;
+}
+
+/* ---------- 列表 / 编辑视图容器 ---------- */
+.note-page .note-list-view,
+.note-page .note-editor-view {
+    flex: 1 1 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+/* 底部渐隐遮罩：同上，滚动条隐藏后用它暗示还有内容可滚，滚到底自动淡出 */
+.note-page .note-list-view {
+    position: relative;
+}
+.note-page .note-list-view::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 44px;
+    z-index: 2;
+    pointer-events: none;
+    opacity: 0;
+    background: linear-gradient(
+        to bottom,
+        rgba(var(--pn-fade-rgb), 0) 0%,
+        rgba(var(--pn-fade-rgb), 0.82) 58%,
+        rgba(var(--pn-fade-rgb), 1) 100%
+    );
+    transition: opacity var(--pn-duration-base) var(--pn-ease-standard);
+}
+.note-page .note-list-view.has-more::after {
+    opacity: 1;
+}
+.note-page .note-editor-view {
+    overflow-y: auto;
+}
+/* 目录列表：纵向行排列（一行一条），不再用卡片网格 */
+.note-page .note-tree {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: var(--pn-space-4);
+    overflow-y: auto;
+}
+.note-page .note-tree::-webkit-scrollbar {
+    display: none;
+}
+
+/* ---------- 收藏夹分组（行列表，不再用卡片） ---------- */
+.note-page .tree-folder {
+    user-select: none;
+    display: flex;
+    flex-direction: column;
+    gap: var(--pn-space-1);
+}
+/* 目录头行：浅色条 + 文件夹名（显示体） + 右侧操作图标 */
+.note-page .tree-folder-header {
+    display: flex;
+    align-items: center;
+    gap: var(--pn-space-2);
+    padding: var(--pn-space-2) var(--pn-space-3);
+    border-radius: var(--pn-radius-md);
+    background-color: var(--pn-bg-tag);
+    cursor: pointer;
+    transition: background-color var(--pn-duration-fast) var(--pn-ease-standard),
+                color var(--pn-duration-fast) var(--pn-ease-standard);
+}
+.note-page .tree-folder-header:hover {
+    background-color: var(--pn-primary-soft);
+}
+.note-page .tree-arrow {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    color: var(--pn-text-muted);
+    transition: transform var(--pn-duration-base) var(--pn-ease-bounce);
+}
+.note-page .tree-arrow.expanded {
+    transform: rotate(90deg);
+}
+.note-page .tree-folder-icon {
+    display: inline-flex;
+    align-items: center;
+    color: var(--pn-folder); /* 文件夹黄 */
+}
+.note-page .tree-folder-name {
+    flex: 1;
+    min-width: 0;
+    font-family: var(--pn-font-display);
+    font-size: var(--pn-text-lg);
+    font-weight: 400;
+    color: var(--pn-text-strong);
+    white-space: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+    /* marquee 容器：flex 横排让两份 .marquee-chunk 首尾相接，
+       模板源码里的换行/缩进空白会被 flex 丢弃，保证无缝回卷宽度精确 */
+    display: flex;
+}
+.note-page .tree-folder-name::-webkit-scrollbar {
+    display: none;
+}
+
+/* ---------- marquee 无缝跑马灯：单份文本块 ---------- */
+.note-page .marquee-chunk {
+    flex: 0 0 auto;
+    white-space: nowrap;
+}
+/* 两份之间的视觉间隔：用 margin-left 排在第二份左侧，
+   不计入单份宽度（needsMarquee 判定），但计入回卷周期（两份起点间距） */
+.note-page .marquee-chunk + .marquee-chunk {
+    margin-left: 2em;
+}
+/* 默认隐藏第二份（副本）：短名称时只显示一份，避免「名称 名称」重复；
+   超宽需要跑马灯时由 v-marquee 指令给容器加 .marquee-active 显示副本 */
+.note-page .tree-folder-name:not(.marquee-active) .marquee-chunk + .marquee-chunk,
+.note-page .tree-note-title:not(.marquee-active) .marquee-chunk + .marquee-chunk {
+    display: none;
+}
+
+/* 行内操作按钮组：始终显示 */
+.note-page .tree-folder-actions,
+.note-page .tree-note-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--pn-space-1);
+}
+
+/* 子级：缩进行列表（靠缩进 + 左边线表达层级，一行一条） */
+.note-page .tree-children {
+    display: flex;
+    flex-direction: column;
+    gap: var(--pn-space-1);
+    margin-left: var(--pn-space-5);
+    padding-left: var(--pn-space-2);
+    border-left: 2px solid var(--pn-border-soft);
+}
+/* 笔记行：一行一条，hover 染主色 */
+.note-page .tree-note {
+    display: flex;
+    align-items: center;
+    gap: var(--pn-space-2);
+    padding: var(--pn-space-2) var(--pn-space-3);
+    border-radius: var(--pn-radius-md);
+    cursor: pointer;
+    transition: background-color var(--pn-duration-fast) var(--pn-ease-standard),
+                box-shadow var(--pn-duration-fast) var(--pn-ease-standard);
+}
+.note-page .tree-note:hover {
+    background-color: var(--pn-primary-soft);
+}
+/* 选中笔记：主色浅底 + 左侧强调条 */
+.note-page .tree-note.selected {
+    background-color: var(--pn-primary-soft-strong);
+    box-shadow: inset 3px 0 0 var(--pn-primary);
+}
+.note-page .tree-note-icon {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    font-size: var(--pn-text-md);
+    color: var(--pn-doc); /* 文档蓝 */
+}
+/* 笔记标题 + 日期纵向容器：日期放到文件名下方，
+   手机端窄屏下文件名不再被日期挤占而显示不全 */
+.note-page .tree-note-body {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.note-page .tree-note-title {
+    min-width: 0;
+    font-size: var(--pn-text-md);
+    font-weight: 600;
+    color: var(--pn-primary-deep);
+    white-space: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+    /* marquee 容器：与 .tree-folder-name 同构 */
+    display: flex;
+}
+.note-page .tree-note-title::-webkit-scrollbar {
+    display: none;
+}
+.note-page .tree-note.selected .tree-note-title {
+    color: var(--pn-primary-deep);
+    font-weight: 700;
+}
+.note-page .tree-note-meta {
+    flex: 0 0 auto;
+    font-size: var(--pn-text-xs);
+    color: var(--pn-text-faint);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.note-page .tree-empty {
+    font-size: var(--pn-text-sm);
+    color: var(--pn-text-faint);
+    padding: var(--pn-space-2) var(--pn-space-3);
+}
+
+/* 行内操作图标按钮 */
+.note-page .act {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 34px;
+    height: 34px;
+    border-radius: var(--pn-radius-sm);
+    color: var(--pn-text-muted);
+    cursor: pointer;
+    transition: background-color var(--pn-duration-fast) var(--pn-ease-standard),
+                color var(--pn-duration-fast) var(--pn-ease-standard),
+                transform var(--pn-duration-fast) var(--pn-ease-bounce);
+}
+.note-page .act .el-icon {
+    font-size: 17px;
+}
+.note-page .act:hover {
+    background-color: var(--pn-primary-soft-strong);
+    color: var(--pn-primary-deep);
+    transform: scale(1.08);
+}
+.note-page .act-del:hover {
+    background-color: var(--pn-danger-soft);
+    color: var(--pn-danger);
+}
+.note-page .act-add:hover {
+    background-color: var(--pn-primary-soft-strong);
+    color: var(--pn-primary-deep);
+}
+
+/* ---------- 移动至文件夹弹窗 ---------- */
+.note-page .move-mask {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    background: var(--pn-overlay);
+    /* 低于 Element Plus 弹窗（MessageBox 默认 2000 级）：
+       这样在弹窗内点“新建目录”时，命名弹框才能盖在本弹窗之上而不被压住 */
+    z-index: 1500;
+    animation: pn-fade-in var(--pn-duration-base) var(--pn-ease-standard);
+}
+.note-page .move-dialog {
+    width: min(92vw, 420px);
+    display: flex;
+    flex-direction: column;
+    background: var(--pn-bg-elevated);
+    border-radius: var(--pn-radius-2xl);
+    padding: var(--pn-space-5);
+    color: var(--pn-text-panel);
+    box-shadow: var(--pn-shadow-pop);
+    animation: pn-pop-in var(--pn-duration-slow) var(--pn-ease-bounce);
+}
+.note-page .move-dialog h2 {
+    flex: 0 0 auto;
+    margin-bottom: var(--pn-space-3);
+    font-size: var(--pn-text-lg);
+    font-family: var(--pn-font-display);
+    font-weight: 400;
+}
+.note-page .move-list {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    gap: var(--pn-space-2);
+    margin-bottom: var(--pn-space-4);
+    max-height: 50vh;
+    overflow-y: auto;
+    scrollbar-width: none;
+}
+.note-page .move-list::-webkit-scrollbar {
+    display: none;
+}
+.note-page .move-item {
+    flex: 0 0 auto;
+    padding: var(--pn-space-3) var(--pn-space-4);
+    border-radius: var(--pn-radius-md);
+    cursor: pointer;
+    background: var(--pn-bg-card);
+    color: var(--pn-text);
+    box-shadow: var(--pn-shadow-sm);
+    transition: background var(--pn-duration-fast) var(--pn-ease-standard),
+                color var(--pn-duration-fast) var(--pn-ease-standard),
+                transform var(--pn-duration-fast) var(--pn-ease-bounce);
+}
+.note-page .move-item:hover {
+    background: var(--pn-primary-soft-strong);
+    color: var(--pn-primary-deep);
+    transform: translateX(4px);
+}
+.note-page .move-item.disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+    text-decoration: line-through;
+}
+.note-page .move-actions {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--pn-space-3);
+}
+/* 移动弹窗内的“新建目录”图标：深蓝填充 + 反白（对比度策略） */
+.note-page .move-actions .act-add {
+    background-color: var(--pn-primary-strong);
+    color: var(--pn-text-invert);
+}
+.note-page .move-actions .act-add:hover {
+    background-color: var(--pn-primary-strong);
+    color: var(--pn-text-invert);
+    filter: brightness(1.12);
+}
+.note-page .move-actions .el-button {
+    border-radius: var(--pn-radius-full);
+    font-weight: 600;
+}
+
+/* ---------- 管理模式：勾选框 + 底部操作栏 ---------- */
+.note-page .tree-check {
+    flex: 0 0 auto;
+    width: 20px;
+    height: 20px;
+    border-radius: 6px;
+    border: 1.5px solid var(--pn-border-strong);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--pn-text-invert);
+    cursor: pointer;
+    box-sizing: border-box;
+    transition: background-color var(--pn-duration-fast) var(--pn-ease-standard),
+                border-color var(--pn-duration-fast) var(--pn-ease-standard);
+}
+.note-page .tree-check.checked {
+    background-color: var(--pn-primary-strong);
+    border-color: var(--pn-primary-strong);
+}
+.note-page .tree-check .el-icon {
+    font-size: 14px;
+}
+.note-page .tree-check .dash {
+    width: 10px;
+    height: 2px;
+    background-color: var(--pn-text-muted);
+    border-radius: 1px;
+}
+
+/* 底部操作栏：毛玻璃 + 顶部圆角 + 底部安全区 */
+.note-page .manage-bar {
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: var(--pn-space-3);
+    padding: var(--pn-space-3);
+    padding-bottom: calc(var(--pn-space-3) + env(safe-area-inset-bottom));
+    background-color: var(--pn-bg-elevated);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border-top: 1px solid var(--pn-border-soft);
+    border-radius: var(--pn-radius-lg) var(--pn-radius-lg) 0 0;
+}
+/* 第一行：已选计数 + 全选 */
+.note-page .manage-info {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    color: var(--pn-text);
+    font-size: var(--pn-text-base);
+}
+.note-page .manage-select-all {
+    color: var(--pn-primary-deep);
+    font-weight: 700;
+    cursor: pointer;
+    padding: var(--pn-space-1) var(--pn-space-2);
+    border-radius: var(--pn-radius-sm);
+    transition: background-color var(--pn-duration-fast) var(--pn-ease-standard);
+}
+.note-page .manage-select-all:hover {
+    background-color: var(--pn-primary-soft);
+}
+/* 第二行：移动 / 删除 / 取消，平分宽度 */
+.note-page .manage-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--pn-space-3);
+}
+.note-page .mbtn {
+    flex: 1 1 0;
+    min-height: var(--pn-touch-min);
+    border: none;
+    border-radius: var(--pn-radius-md);
+    padding: var(--pn-space-2) 0;
+    font-size: var(--pn-text-base);
+    font-weight: 700;
+    cursor: pointer;
+    color: var(--pn-text-invert);
+    text-align: center;
+    transition: filter var(--pn-duration-fast) var(--pn-ease-standard),
+                transform var(--pn-duration-fast) var(--pn-ease-bounce);
+}
+.note-page .mbtn:active {
+    transform: scale(0.97);
+}
+.note-page .mbtn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+    transform: none;
+}
+.note-page .mbtn-move {
+    background-image: var(--pn-btn-grad);
+    box-shadow: var(--pn-shadow-sm);
+}
+.note-page .mbtn-move:hover:not(:disabled) {
+    filter: brightness(1.1);
+}
+.note-page .mbtn-del {
+    background-color: var(--pn-danger-fill);
+    box-shadow: var(--pn-shadow-sm);
+}
+.note-page .mbtn-del:hover:not(:disabled) {
+    background-color: var(--pn-danger-hover);
+}
+.note-page .mbtn-cancel {
+    background-color: var(--pn-bg-hover);
+    color: var(--pn-text-sub);
+}
+.note-page .mbtn-cancel:hover:not(:disabled) {
+    background-color: var(--pn-border-soft);
+    color: var(--pn-text);
+}

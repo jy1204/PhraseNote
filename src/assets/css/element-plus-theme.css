@@ -1,0 +1,362 @@
+/* ============================================================
+   Element Plus 皮肤（可爱 × 科技）
+   · 在 main.js 中位于 element-plus 样式与 public/index.css 之后引入，
+     级联顺序即覆写顺序。
+   · 浅色写 :root；深色写 :root[data-theme='dark'], html.dark
+     （与 --pn-* 深色组织一致，main.js 的 syncDarkClass 已对齐 html.dark）。
+   ============================================================ */
+:root {
+  /* —— 主色：填充深蓝（白字 AA） —— */
+  --el-color-primary: #0A6DAF;
+  --el-color-primary-light-3: #3E8CC8;
+  --el-color-primary-light-5: #6FA9DC;
+  --el-color-primary-light-7: #A3C9EC;
+  --el-color-primary-light-8: #C4DCF5;
+  --el-color-primary-light-9: #E3EFFA;
+  --el-color-primary-dark-2: #085A93;
+
+  /* —— 功能色 —— */
+  --el-color-success: #3ECF9E;
+  --el-color-success-light-3: #62DAB2;
+  --el-color-success-light-5: #85E4C6;
+  --el-color-success-light-7: #B0EFDD;
+  --el-color-success-light-8: #C9F5E9;
+  --el-color-success-light-9: #E6FBF4;
+  --el-color-success-dark-2: #2FB885;
+
+  --el-color-warning: #F5B93A;
+  --el-color-warning-light-3: #F8C95F;
+  --el-color-warning-light-5: #FAD785;
+  --el-color-warning-light-7: #FCE5B0;
+  --el-color-warning-light-8: #FDEEC9;
+  --el-color-warning-light-9: #FEF6E6;
+  --el-color-warning-dark-2: #D9A02A;
+
+  --el-color-danger: #D63B5C;
+  --el-color-danger-light-3: #E0647F;
+  --el-color-danger-light-5: #E88CA1;
+  --el-color-danger-light-7: #F2BCC9;
+  --el-color-danger-light-8: #F7D3DC;
+  --el-color-danger-light-9: #FCE9ED;
+  --el-color-danger-dark-2: #B92E4B;
+  /* 新版 EP 同步 error 别名 */
+  --el-color-error: #D63B5C;
+  --el-color-error-light-3: #E0647F;
+  --el-color-error-light-5: #E88CA1;
+  --el-color-error-light-7: #F2BCC9;
+  --el-color-error-light-8: #F7D3DC;
+  --el-color-error-light-9: #FCE9ED;
+  --el-color-error-dark-2: #B92E4B;
+
+  --el-color-info: #8494A3;
+  --el-color-info-light-3: #9FADBB;
+  --el-color-info-light-5: #B9C5D1;
+  --el-color-info-light-7: #D2DAE3;
+  --el-color-info-light-8: #E1E7ED;
+  --el-color-info-light-9: #F0F3F6;
+  --el-color-info-dark-2: #6B7B8A;
+
+  /* —— 表面 —— */
+  --el-bg-color: #FFFFFF;
+  --el-bg-color-page: #F4F7FB;
+  --el-bg-color-overlay: #FFFFFF;
+
+  /* —— 文字 —— */
+  --el-text-color-primary: #1A2733;
+  --el-text-color-regular: #33414F;
+  --el-text-color-secondary: #5B6B7A;
+  --el-text-color-placeholder: #8494A3;
+  --el-text-color-disabled: #A9B6C2;
+
+  /* —— 边框 / 填充 —— */
+  --el-border-color: #D9E2EC;
+  --el-border-color-light: #E7EEF5;
+  --el-border-color-lighter: #EFF4F9;
+  --el-border-color-extra-light: #F5F8FB;
+  --el-border-color-dark: #C7D3DE;
+  --el-border-color-darker: #A9B6C2;
+  --el-border-color-hover: #A9B6C2;
+  --el-fill-color: #EFF4F9;
+  --el-fill-color-light: #F5F8FB;
+  --el-fill-color-lighter: #F8FAFC;
+  --el-fill-color-blank: #FFFFFF;
+  --el-fill-color-dark: #D9E2EC;
+  --el-fill-color-darker: #C7D3DE;
+
+  /* —— 圆角 / 尺寸 —— */
+  --el-border-radius-small: 8px;
+  --el-border-radius-base: 12px;
+  --el-border-radius-round: 20px;
+  --el-border-radius-circle: 100%;
+  --el-component-size: 40px;
+
+  /* —— 阴影 / 遮罩 / 动效 —— */
+  --el-box-shadow: 0 12px 28px rgba(13, 38, 76, 0.10), 0 4px 10px rgba(13, 38, 76, 0.06);
+  --el-box-shadow-light: 0 1px 2px rgba(13, 38, 76, 0.05), 0 1px 3px rgba(13, 38, 76, 0.06);
+  --el-box-shadow-lighter: 0 4px 10px rgba(13, 38, 76, 0.07), 0 2px 4px rgba(13, 38, 76, 0.05);
+  --el-box-shadow-dark: 0 16px 40px rgba(13, 38, 76, 0.16);
+  --el-mask-color: rgba(15, 30, 45, 0.45);
+  --el-mask-color-extra-light: rgba(15, 30, 45, 0.25);
+  --el-transition-duration: 0.18s;
+  --el-transition-duration-fast: 0.12s;
+}
+
+/* 触屏设备：控件基准高提到 44px，保证触控友好 */
+@media (pointer: coarse) {
+  :root {
+    --el-component-size: 44px;
+  }
+}
+
+/* ===================== 深色（深海军蓝 + 霓虹） ===================== */
+:root[data-theme='dark'],
+html.dark {
+  --el-color-primary: #1A72B8;
+  --el-color-primary-light-3: #3A8CCF;
+  --el-color-primary-light-5: #5AA6DD;
+  --el-color-primary-light-7: #8FC2EA;
+  --el-color-primary-light-8: #B2D8F2;
+  --el-color-primary-light-9: #D9EDF9;
+  --el-color-primary-dark-2: #155F9C;
+
+  --el-color-success: #4FE8C6;
+  --el-color-success-light-3: #6BEDD2;
+  --el-color-success-light-5: #8FF2DE;
+  --el-color-success-light-7: #B8F7EA;
+  --el-color-success-light-8: #D0FAF1;
+  --el-color-success-light-9: #E8FDF8;
+  --el-color-success-dark-2: #36C4A6;
+
+  --el-color-warning: #FFD66B;
+  --el-color-warning-light-3: #FFE089;
+  --el-color-warning-light-5: #FFE8A6;
+  --el-color-warning-light-7: #FFF0C4;
+  --el-color-warning-light-8: #FFF5D9;
+  --el-color-warning-light-9: #FFFAEC;
+  --el-color-warning-dark-2: #E0B44A;
+
+  --el-color-danger: #E24468;
+  --el-color-danger-light-3: #EA6B87;
+  --el-color-danger-light-5: #F092A7;
+  --el-color-danger-light-7: #F6BAC7;
+  --el-color-danger-light-8: #F9D5DE;
+  --el-color-danger-light-9: #FCEAEE;
+  --el-color-danger-dark-2: #BE3355;
+  --el-color-error: #E24468;
+  --el-color-error-light-3: #EA6B87;
+  --el-color-error-light-5: #F092A7;
+  --el-color-error-light-7: #F6BAC7;
+  --el-color-error-light-8: #F9D5DE;
+  --el-color-error-light-9: #FCEAEE;
+  --el-color-error-dark-2: #BE3355;
+
+  --el-color-info: #8AA5C0;
+  --el-color-info-light-3: #A5BAD2;
+  --el-color-info-light-5: #BFCFDF;
+  --el-color-info-light-7: #D6E2EB;
+  --el-color-info-light-8: #E3ECF3;
+  --el-color-info-light-9: #F1F5F9;
+  --el-color-info-dark-2: #6B88A3;
+
+  --el-bg-color: #152840;
+  --el-bg-color-page: #0D1B2E;
+  --el-bg-color-overlay: #1B3454;
+
+  --el-text-color-primary: #EAF3FC;
+  --el-text-color-regular: #D7E5F2;
+  --el-text-color-secondary: #A7BCD2;
+  --el-text-color-placeholder: #6E88A6;
+  --el-text-color-disabled: #4A6076;
+
+  --el-border-color: #2A4A73;
+  --el-border-color-light: #1F3A5C;
+  --el-border-color-lighter: #1B3454;
+  --el-border-color-extra-light: #152840;
+  --el-border-color-dark: #35597F;
+  --el-border-color-darker: #3E6A96;
+  --el-border-color-hover: #3E6A96;
+  --el-fill-color: #1B3454;
+  --el-fill-color-light: #152840;
+  --el-fill-color-lighter: #122336;
+  --el-fill-color-blank: #0D1B2E;
+  --el-fill-color-dark: #2A4A73;
+  --el-fill-color-darker: #35597F;
+
+  --el-box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45), 0 4px 10px rgba(0, 0, 0, 0.35);
+  --el-box-shadow-light: 0 1px 2px rgba(0, 0, 0, 0.30), 0 1px 3px rgba(0, 0, 0, 0.35);
+  --el-box-shadow-lighter: 0 4px 10px rgba(0, 0, 0, 0.38), 0 2px 4px rgba(0, 0, 0, 0.30);
+  --el-box-shadow-dark: 0 16px 40px rgba(0, 0, 0, 0.55);
+  --el-mask-color: rgba(5, 12, 24, 0.66);
+  --el-mask-color-extra-light: rgba(5, 12, 24, 0.4);
+
+  /* 空状态插画改蓝调，避免深色下发灰 */
+  .el-empty {
+    --el-empty-fill-color-1: #2A4A73;
+    --el-empty-fill-color-2: #23446B;
+    --el-empty-fill-color-3: #1B3454;
+    --el-empty-fill-color-4: #20395C;
+    --el-empty-fill-color-5: #1B3454;
+    --el-empty-fill-color-6: #23446B;
+    --el-empty-fill-color-7: #1F3A5C;
+    --el-empty-fill-color-8: #1B3454;
+    --el-empty-fill-color-9: #152840;
+  }
+}
+
+/* ===================== 组件细节微调（两套主题通用） ===================== */
+/* 主按钮：科技蓝渐变 + hover 提亮反馈 */
+.el-button--primary:not(.is-disabled, .is-loading) {
+  background-image: var(--pn-btn-grad);
+  border-color: transparent;
+}
+.el-button--primary:not(.is-disabled, .is-loading):hover,
+.el-button--primary:not(.is-disabled, .is-loading):focus {
+  background-color: var(--pn-primary-hover);
+  border-color: transparent;
+  filter: brightness(1.12);
+}
+.el-button--primary:not(.is-disabled, .is-loading):active {
+  filter: brightness(0.95);
+}
+
+/* 下拉浮层：大圆角 + 柔和投影 */
+.el-popper {
+  border-radius: var(--pn-radius-xl) !important;
+  box-shadow: var(--pn-shadow-pop);
+}
+.el-select-dropdown__item.hover,
+.el-select-dropdown__item:hover {
+  background-color: var(--pn-bg-hover);
+}
+
+/* 对话框 / 消息框 / 消息提示：统一圆角语言 */
+.el-dialog,
+.el-message-box {
+  border-radius: var(--pn-radius-2xl);
+}
+.el-message {
+  border-radius: var(--pn-radius-md);
+}
+
+/* 设置窗口内 el-select 下拉需高于设置遮罩（原有 10002 提升保留） */
+.settings-select-popper.el-popper {
+  z-index: 10002 !important;
+}
+
+/* ---------- 设置窗口的 el-select：整体改用 --pn-* 令牌上色 ----------
+   EP 的下拉浮层默认读 --el-bg-color-overlay / --el-text-color-*，这些变量没有在
+   每一套「主题配色」里逐一重定义，所以切主题（含樱花粉）时下拉面板还是旧色。
+   这里直接把面板皮肤挂到 --pn-* 上：深浅主题与主题配色都会自动跟随。 */
+.el-popper.settings-select-popper,
+.el-popper.settings-select-popper.is-light {
+  background: var(--pn-bg-elevated);
+  border: 1px solid var(--pn-border-soft);
+  border-radius: var(--pn-radius-xl);
+  box-shadow: var(--pn-shadow-pop);
+  color: var(--pn-text-panel);
+}
+.el-popper.settings-select-popper .el-popper__arrow::before,
+.el-popper.settings-select-popper.is-light .el-popper__arrow::before {
+  background: var(--pn-bg-elevated);
+  border: 1px solid var(--pn-border-soft);
+}
+.settings-select-popper .el-select-dropdown__item {
+  height: 38px;
+  line-height: 38px;
+  margin: var(--pn-space-1) var(--pn-space-2);
+  padding: 0 var(--pn-space-3);
+  border-radius: var(--pn-radius-md);
+  color: var(--pn-text-panel);
+  font-weight: 500;
+  transition: background-color var(--pn-duration-fast) var(--pn-ease-standard),
+              color var(--pn-duration-fast) var(--pn-ease-standard);
+}
+.settings-select-popper .el-select-dropdown__item.is-hovering,
+.settings-select-popper .el-select-dropdown__item:hover {
+  background-color: var(--pn-primary-soft-strong);
+  color: var(--pn-primary-deep);
+}
+.settings-select-popper .el-select-dropdown__item.is-selected {
+  background-color: var(--pn-primary-soft-strongest);
+  color: var(--pn-primary-deep);
+  font-weight: 700;
+}
+/* 触发器（未展开时的输入框）同样走令牌，避免与下拉面板皮色不一致 */
+.settings-window .el-select__wrapper {
+  background-color: var(--pn-bg-inset);
+  border-radius: var(--pn-radius-md);
+  box-shadow: inset 0 0 0 1px var(--pn-border);
+  color: var(--pn-text-panel);
+}
+.settings-window .el-select__wrapper:hover {
+  box-shadow: inset 0 0 0 1px var(--pn-primary);
+}
+.settings-window .el-select__wrapper.is-focused {
+  box-shadow: var(--pn-glow-focus);
+}
+.settings-window .el-select__placeholder {
+  color: var(--pn-text-placeholder);
+}
+.settings-window .el-select__selected-item,
+.settings-window .el-select__wrapper .el-select__selected-item > span {
+  color: var(--pn-text-panel);
+}
+
+/* ===================== 弹窗（MessageBox / Dialog）皮肤统一走 --pn-* 令牌 =====================
+   新建目录 / 新建文件 / 重命名 / 删除确认 等都是 ElMessageBox（teleport 到 body），
+   默认读 --el-bg-color-overlay 等变量；而主题配色（樱花粉）只重定义了 --el-color-primary，
+   没碰表面/边框/文字，导致切到樱花粉时弹窗仍是蓝白底。这里直接把弹窗皮肤挂到 --pn-* 上，
+   深浅主题与主题配色都自动跟随；同时下方又在 index.css 的 sakura 块补了 EP 表面变量，
+   让 select / tooltip / popover 等所有 EP 组件一并跟随。 */
+.el-overlay {
+  background-color: var(--pn-overlay);
+}
+.el-message-box,
+.el-dialog {
+  background-color: var(--pn-bg-elevated);
+  border: 1px solid var(--pn-border-soft);
+  color: var(--pn-text-panel);
+}
+.el-message-box__title,
+.el-dialog__title {
+  color: var(--pn-text-strong);
+}
+/* 警告 / 信息类型的状态图标沿用各自语义色（黄 / 蓝），这里只保证文字跟随 */
+.el-message-box__content,
+.el-message-box__message,
+.el-message-box__message p,
+.el-dialog__body {
+  color: var(--pn-text);
+}
+/* 输入框（重命名 / 新建目录的名称输入）皮肤 */
+.el-message-box__input .el-input__wrapper {
+  background-color: var(--pn-bg-inset);
+  box-shadow: inset 0 0 0 1px var(--pn-border);
+}
+.el-message-box__input .el-input__wrapper.is-focus {
+  box-shadow: var(--pn-glow-focus);
+}
+.el-message-box__input .el-input__inner,
+.el-dialog .el-input__inner {
+  color: var(--pn-text);
+}
+.el-message-box__input .el-input__inner::placeholder,
+.el-dialog .el-input__inner::placeholder {
+  color: var(--pn-text-placeholder);
+}
+/* 校验错误提示（如“名称不能为空”）跟随危险色 */
+.el-message-box__errormsg {
+  color: var(--pn-danger);
+}
+/* 取消 / 默认按钮跟随主题（不抢主色按钮的视觉权重） */
+.el-message-box__btns .el-button:not(.el-button--primary),
+.el-dialog__footer .el-button:not(.el-button--primary) {
+  background-color: var(--pn-bg-hover);
+  border-color: var(--pn-border-soft);
+  color: var(--pn-text);
+}
+.el-message-box__btns .el-button:not(.el-button--primary):hover,
+.el-dialog__footer .el-button:not(.el-button--primary):hover {
+  background-color: var(--pn-border-soft);
+  color: var(--pn-text-strong);
+}
