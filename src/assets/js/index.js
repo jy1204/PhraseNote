@@ -5,6 +5,9 @@ export const add_content_panel_show = ref(false);
 export const currentPlatformRef = ref('');
 // 数据版本号：导入/导出成功后自增，PhrasePage 监听后刷新词库（替代 App 直接持有子组件 ref）
 export const phraseDataVersion = ref(0);
+// 全局初始化完成标记：App 启动时调用 ensure_init 完成后置 true；
+// PhrasePage 等子页面据此延后首屏加载，避免首次安装 db 尚未建好就读取导致空白
+export const appReady = ref(false);
 // 笔记数据版本号：导入（zip 备份）成功后自增，NotePage 监听后重新加载目录树
 // （与 phraseDataVersion 解耦：导入只改对应库，互不影响刷新）
 export const noteDataVersion = ref(0);

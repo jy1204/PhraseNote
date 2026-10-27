@@ -349,11 +349,11 @@
     flex: 0 0 auto;
 }
 .panel>form .form-row .form-item-type { flex: 0 0 auto; }
-.panel>form .form-row .keyboard-box { flex: 1 1 auto; min-width: 0; }
+.panel>form .form-row .keyword-box { flex: 1 1 auto; min-width: 0; }
 /* 统一「类型」下拉框与「关键词」输入框高度：EP 的 el-select__wrapper 用 min-height、
    el-input__wrapper 用固定 height，二者并排时高度不一致。这里显式锁到同一控制高度 */
 .panel>form .form-row .form-item-type .el-select__wrapper,
-.panel>form .form-row .keyboard-box .el-input__wrapper {
+.panel>form .form-row .keyword-box .el-input__wrapper {
     height: var(--pn-control-h);
     min-height: var(--pn-control-h);
     border-radius: var(--pn-radius-md);
@@ -533,12 +533,12 @@
 .panel>form .el-card__body .el-collapse-item__header { padding-right: 56px; }
 
 /* 关键词输入框：右侧预留清空按钮位置（清空钮 32→36px） */
-.panel>form .keyboard-input .el-input__wrapper {
+.panel>form .keyword-input .el-input__wrapper {
     padding-right: 44px;
     border-radius: var(--pn-radius-md);
 }
-.panel>form .keyboard-box .el-form-item__content { position: relative; }
-.panel>form .keyboard-box .el-form-item__content .keyboard-clear {
+.panel>form .keyword-box .el-form-item__content { position: relative; }
+.panel>form .keyword-box .el-form-item__content .keyword-clear {
     position: absolute;
     top: 50%;
     right: var(--pn-space-2);
@@ -554,11 +554,11 @@
     transition: color var(--pn-duration-fast) var(--pn-ease-standard),
                 background-color var(--pn-duration-fast) var(--pn-ease-standard);
 }
-.panel>form .keyboard-box .el-form-item__content .keyboard-clear:hover {
+.panel>form .keyword-box .el-form-item__content .keyword-clear:hover {
     color: var(--pn-danger);
     background-color: var(--pn-danger-soft);
 }
-.panel>form .keyboard-box .el-form-item__content .keyboard-clear .el-icon { font-size: 18px; }
+.panel>form .keyword-box .el-form-item__content .keyword-clear .el-icon { font-size: 18px; }
 
 /* 底部操作区：绝对定位 hack → 流内 flex 子元素，通栏底栏 + 安全区内边距
    （抽屉贴底时避开系统手势条） */

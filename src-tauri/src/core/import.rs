@@ -276,14 +276,15 @@ fn import_phrase_bytes(
         .execute(
             "CREATE TABLE IF NOT EXISTS phrase_table (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                type TEXT, first_char TEXT, keyboard TEXT, list TEXT
+                type TEXT, first_char TEXT, keyword TEXT, list TEXT,
+                source TEXT DEFAULT 'user', state INTEGER DEFAULT 0
             )",
             [],
         )
         .map_err(|e| e.to_string())?;
     dst_conn
         .execute(
-            "CREATE INDEX IF NOT EXISTS idx_keyboard ON phrase_table(keyboard)",
+            "CREATE INDEX IF NOT EXISTS idx_keyword ON phrase_table(keyword)",
             [],
         )
         .map_err(|e| e.to_string())?;
@@ -291,7 +292,7 @@ fn import_phrase_bytes(
     let tx = dst_conn.unchecked_transaction().map_err(|e| e.to_string())?;
 
     let mut stmt = src_conn
-        .prepare("SELECT type, first_char, keyboard, list FROM phrase_table")
+        .prepare("SELECT type, first_char, keyword, list, source FROM phrase_table")
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |row| {
@@ -300,6 +301,7 @@ fn import_phrase_bytes(
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
                 row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
             ))
         })
         .map_err(|e| e.to_string())?;
@@ -311,17 +313,25 @@ fn import_phrase_bytes(
             cancelled = true;
             break;
         }
-        let (t, fc, kb, list) = row.map_err(|e| e.to_string())?;
+        let (t, fc, kb, list, src) = row.map_err(|e| e.to_string())?;
 
-        let existing: Option<String> = tx
+        // base 种子不当普通数据导入：只接收 source='user' 的行，
+        // 避免把另一台设备的 base（及其 state=1 隐藏标记）当成用户数据插入。
+        if src != "user" {
+            continue;
+        }
+
+        // 查重探针限定 source='user'：只有目标也存在 user 行才算真正冲突；
+        // 目标仅有 base 行（被覆盖或纯 base）属于「干净覆盖」，不弹窗。
+        let existing_user_list: Option<String> = tx
             .query_row(
-                "SELECT list FROM phrase_table WHERE keyboard = ?1",
+                "SELECT list FROM phrase_table WHERE keyword = ?1 AND source='user'",
                 params![kb],
                 |r| r.get(0),
             )
             .ok();
 
-        match existing {
+        match existing_user_list {
             Some(old_list) => {
                 duplicates.push(DuplicateInfo {
                     keyword: kb,
@@ -331,11 +341,26 @@ fn import_phrase_bytes(
                 });
             }
             None => {
+                // 插入为 user 覆盖行；若目标有对应 base 行则标记其 state=1（与 save_phrase 一致）
                 tx.execute(
-                    "INSERT INTO phrase_table (type, first_char, keyboard, list) VALUES (?1,?2,?3,?4)",
+                    "INSERT INTO phrase_table (type, first_char, keyword, list, source, state) VALUES (?1,?2,?3,?4,'user',0)",
                     params![t, fc, kb, list],
                 )
                 .map_err(|e| e.to_string())?;
+                let base_exists: bool = tx
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM phrase_table WHERE keyword = ?1 AND source='base')",
+                        params![kb],
+                        |r| r.get(0),
+                    )
+                    .unwrap_or(false);
+                if base_exists {
+                    tx.execute(
+                        "UPDATE phrase_table SET state=1 WHERE source='base' AND keyword=?1",
+                        params![kb],
+                    )
+                    .map_err(|e| e.to_string())?;
+                }
                 *imported += 1;
             }
         }

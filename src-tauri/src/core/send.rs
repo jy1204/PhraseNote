@@ -87,14 +87,41 @@ pub async fn send_files_to_devices(
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "unknown.db".into());
 
-            let bytes = tokio::fs::read(file_path)
-                .await
-                .map_err(|e| e.to_string())?;
             // 发送端按表名嗅探模块（phrase/note），随传输带上，
             // 使接收端导入时无需再猜，与导出 manifest 的 module 字段等价
             let module = module_of_file(Path::new(file_path))
                 .unwrap_or("unknown")
                 .to_string();
+
+            // 短语库只发 source='user' 行（与导出 export_subject_dirs 同策略）：
+            // base 是公共种子，不随个人数据互传；其它模块（笔记等）保持整库原样发送。
+            // 过滤失败则回退整库，不阻断发送。
+            let bytes = if module == "phrase" {
+                let p = file_path.clone();
+                match tokio::task::spawn_blocking(move || {
+                    crate::english::phrase::export_user_rows_bytes(Path::new(&p))
+                })
+                .await
+                {
+                    Ok(Ok(b)) => b,
+                    Ok(Err(e)) => {
+                        println!("[send] phrase 过滤失败，回退整库发送: {}", e);
+                        tokio::fs::read(file_path)
+                            .await
+                            .map_err(|e| e.to_string())?
+                    }
+                    Err(e) => {
+                        println!("[send] phrase 过滤任务失败，回退整库发送: {}", e);
+                        tokio::fs::read(file_path)
+                            .await
+                            .map_err(|e| e.to_string())?
+                    }
+                }
+            } else {
+                tokio::fs::read(file_path)
+                    .await
+                    .map_err(|e| e.to_string())?
+            };
             let part = reqwest::multipart::Part::bytes(bytes)
                 .file_name(file_name.clone())
                 .mime_str("application/octet-stream")

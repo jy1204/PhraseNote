@@ -16,8 +16,8 @@
       <div class="tools">
         <div class="search-title pn-search">
           <el-input
-            ref="search_keyboard_input"
-            v-model="search_keyboard_input_content"
+            ref="search_note_input"
+            v-model="search_note_input_content"
             class="search-input"
             placeholder="搜索标题或目录"
             :prefix-icon="Search"
@@ -137,18 +137,18 @@
     folders, loadFolders,
     createFolderDb, createNoteDb,
     saveFolder, saveNote, deleteFolderDb, deleteNoteDb,
-    moveNoteDb, batchMoveDb, batchDeleteNotesDb,
+    moveNoteDb, batchMoveDb, batchDeleteNotesDb, batchDeleteFoldersDb,
   } from '../js/noteStore.js'
 
   // 搜索框状态：本地 ref，确保模板 v-model 绑定为明确的响应式
   // （规避跨文件解构 ref 在 <script setup> 中的绑定隐患）
-  const search_keyboard_input = ref(null)
-  const search_keyboard_input_content = ref('')
+  const search_note_input = ref(null)
+  const search_note_input_content = ref('')
   function clear_search_input() {
-    search_keyboard_input_content.value = ''
+    search_note_input_content.value = ''
     // 清空后自动聚焦到输入框（el-input 暴露 focus()，用 nextTick 确保 DOM 已更新）
     nextTick(() => {
-      const el = search_keyboard_input.value
+      const el = search_note_input.value
       if (el && typeof el.focus === 'function') el.focus()
     })
   }
@@ -196,7 +196,7 @@
   // 搜索：按笔记标题或文件夹名实时过滤；命中时文件夹自动展开
   // 文件夹名命中 → 展示整个文件夹（含其全部笔记）；否则只展示标题命中的笔记。
   // 文件夹名命中时即使该文件夹为空也保留，确保“搜目录名能找到对应目录”。
-  const searchKeyword = computed(() => (search_keyboard_input_content.value || '').trim().toLowerCase())
+  const searchKeyword = computed(() => (search_note_input_content.value || '').trim().toLowerCase())
   const filteredFolders = computed(() => {
     const kw = searchKeyword.value
     if (!kw) return folders.value
@@ -333,7 +333,11 @@
       })
     } catch (e) { return }
     const noteIds = []
+    const folderIdsToDelete = foldersToDelete.map((f) => f.id)
+    const folderIdSet = new Set(folderIdsToDelete)
     for (const { note, folder } of items) {
+      // 整选的目录会被级联删除，其下的笔记无需单独删除，跳过以省一次写库
+      if (folderIdSet.has(folder.id)) continue
       const i = folder.notes.findIndex((n) => n.id === note.id)
       if (i >= 0) { folder.notes.splice(i, 1); noteIds.push(note.id) }
     }
@@ -342,9 +346,9 @@
       const idx = folders.value.findIndex((x) => x.id === f.id)
       if (idx >= 0) folders.value.splice(idx, 1)
     }
-    // 持久化：批量删文件 + 逐个删目录（目录少，逐个即可）
+    // 持久化：批量删文件（1 次开库）+ 批量删目录（1 次开库，单事务），取代原先 1+N 次开库
     if (noteIds.length > 0) await batchDeleteNotesDb(noteIds)
-    for (const f of foldersToDelete) await deleteFolderDb(f.id)
+    if (folderIdsToDelete.length > 0) await batchDeleteFoldersDb(folderIdsToDelete)
     checkedFolders.value.clear(); checkedNotes.value.clear()
     ElMessage({ message: `已删除 ${noteIds.length} 篇、${foldersToDelete.length} 个目录`, type: 'success' })
   }

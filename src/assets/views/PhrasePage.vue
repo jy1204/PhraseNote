@@ -10,8 +10,8 @@
       <!-- 词条列表区域：搜索框始终可见（搜索无结果时也需保留，方便清词/改词），
            空状态提示与词条列表按 show_data 互斥显示 -->
       <div class="content-knowledge" :class="{ 'has-more': listHasMoreBelow }">
-        <div class="search-keyboard pn-search">
-          <el-input ref="search_keyboard_input" v-model="search_keyboard_input_content" class="search-input" placeholder="搜索关键词" :prefix-icon="Search" />
+        <div class="search-keyword pn-search">
+          <el-input ref="search_keyword_input" v-model="search_keyword_input_content" class="search-input" placeholder="搜索关键词" :prefix-icon="Search" />
           <button type="button" class="search-input-clear" @click="clear_search_input">
             <el-icon><CircleCloseFilled /></el-icon>
           </button>
@@ -72,9 +72,9 @@
                   <el-option label="#" value="#" />
                 </el-select>
               </el-form-item>
-              <el-form-item label="关键词:" class="keyboard-box">
-                <el-input ref="keyboardInput" v-model="form.keyboard" class="keyboard-input" />
-                <button type="button" class="keyboard-clear" @click="clear_keyboard_content">
+              <el-form-item label="关键词:" class="keyword-box">
+                <el-input ref="keywordInput" v-model="form.keyword" class="keyword-input" />
+                <button type="button" class="keyword-clear" @click="clear_keyword_content">
                   <el-icon><CircleCloseFilled /></el-icon>
                 </button>
               </el-form-item>
@@ -127,8 +127,8 @@ const {
   activeChar,
   handleCharClick,
   show_data,
-  search_keyboard_input,
-  search_keyboard_input_content,
+  search_keyword_input,
+  search_keyword_input_content,
   clear_search_input,
   filteredPhraseList,
   deletePhrase,
@@ -143,8 +143,8 @@ const {
   allDelete,
   onSubmit,
   formMode,
-  keyboardInput,
-  clear_keyboard_content,
+  keywordInput,
+  clear_keyword_content,
   openAddForm,
   // 分页懒加载
   allPhraseList,

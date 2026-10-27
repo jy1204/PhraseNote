@@ -8,6 +8,7 @@
 //   import  —— zip 导入 + 局域网接收导入 + 接收缓存清理
 //   export  —— 导出为 zip
 //   saf     —— 安卓 content:// URI 互转
+//   init    —— 首次启动环境初始化 + 基础词 db 迁移（种子 resource → 工作库）
 //
 // 各子模块的导出项由 lib.rs 通过完整路径（crate::core::*::*）引用与注册。
 
@@ -19,4 +20,5 @@ pub mod import;
 pub mod export;
 pub mod saf;
 pub mod config;
+pub mod init;
 

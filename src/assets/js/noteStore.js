@@ -157,6 +157,12 @@ export async function batchDeleteNotesDb(noteIds) {
   await invoke('batch_delete_notes', { note_ids: noteIds })
 }
 
+// 批量删除目录（单事务、单开库；级联删其下文件）—— 取代前端逐个 delete_folder
+export async function batchDeleteFoldersDb(folderIds) {
+  if (!isTauri) return
+  await invoke('batch_delete_folders', { folder_ids: folderIds })
+}
+
 export async function updateNoteContentDb(id, content) {
   if (!isTauri) return
   await invoke('update_note_content', { id, content })

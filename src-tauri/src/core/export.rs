@@ -72,7 +72,19 @@ pub async fn export_subject_dirs(app: AppHandle, save_path: String) -> Result<us
     let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
     for (rel, path) in &files {
-        let data = fs::read(path).map_err(|e| e.to_string())?;
+        // 短语库只导出 source='user' 行（base 种子随 seed 走，不进个人备份/互传）；
+        // 其它模块（笔记等）保持整库原样导出。失败则回退整库，不阻断导出。
+        let data = if matches!(crate::core::paths::module_of_file(path), Some("phrase")) {
+            match crate::english::phrase::export_user_rows_bytes(path) {
+                Ok(b) => b,
+                Err(e) => {
+                    println!("[export] phrase 过滤失败，回退整库导出: {}", e);
+                    fs::read(path).map_err(|e| e.to_string())?
+                }
+            }
+        } else {
+            fs::read(path).map_err(|e| e.to_string())?
+        };
         zip.start_file(rel, options).map_err(|e| e.to_string())?;
         zip.write_all(&data).map_err(|e| e.to_string())?;
     }

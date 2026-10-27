@@ -10,7 +10,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from '@tauri-apps/api/event'
 // 全局共享状态
-import { add_content_panel_show, phraseDataVersion } from "./index.js"
+import { add_content_panel_show, phraseDataVersion, appReady } from "./index.js"
 // Element Plus（图标已在 main.js 全局注册，这里只需消息框）
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search } from '@element-plus/icons-vue'
@@ -21,7 +21,7 @@ const PAGE_SIZE = 100
 
 export function usePhrasePage() {
   const formMode = ref('add')
-  const editingKeyboard = ref('')
+  const editingKeyWord = ref('')
 
   const typeList = ref([
     '*','A','B','C','D','E','F','G','H','I','J','K','L','M',
@@ -32,7 +32,7 @@ export function usePhrasePage() {
   const form = reactive({
     type: 'A~Z',
     first_char: '',
-    keyboard: '',
+    keyword: '',
     list: [{ phrase: '', translate: '' }]
   })
   const activeNames = ref(['1'])
@@ -42,10 +42,10 @@ export function usePhrasePage() {
   // 主列表数据（分页加载，allPhraseList 只持有已加载的部分）
   const allPhraseList = ref([])
   const show_data = ref(true)
-  const search_keyboard_input = ref(null)
-  const search_keyboard_input_content = ref('')
+  const search_keyword_input = ref(null)
+  const search_keyword_input_content = ref('')
 
-  const keyboardInput = ref(null)
+  const keywordInput = ref(null)
   const formScroll = ref(null)
   // 列表滚动容器（.grammar）的 ref，用于滚动到底检测
   const listScrollRef = ref(null)
@@ -61,7 +61,7 @@ export function usePhrasePage() {
   function snapshotAddForm() {
     savedAddState.value = {
       type: form.type,
-      keyboard: form.keyboard,
+      keyword: form.keyword,
       first_char: form.first_char,
       list: form.list.map(p => ({ ...p })),
       activeNames: [...activeNames.value],
@@ -70,23 +70,23 @@ export function usePhrasePage() {
 
   async function openAddForm() {
     formMode.value = 'add'
-    editingKeyboard.value = ''
+    editingKeyWord.value = ''
     add_content_panel_show.value = true
     if (savedAddState.value) {
       form.type = savedAddState.value.type
-      form.keyboard = savedAddState.value.keyboard
+      form.keyword = savedAddState.value.keyword
       form.first_char = savedAddState.value.first_char
       form.list = savedAddState.value.list.map(p => ({ ...p }))
       activeNames.value = [...savedAddState.value.activeNames]
     } else {
       form.type = 'A~Z'
-      form.keyboard = ''
+      form.keyword = ''
       form.first_char = ''
       form.list = [{ phrase: '', translate: '' }]
       activeNames.value = ['1']
     }
     await nextTick()
-    keyboardInput.value?.focus()
+    keywordInput.value?.focus()
   }
 
   function closeAddPanel() {
@@ -101,9 +101,9 @@ export function usePhrasePage() {
       snapshotAddForm()
     }
     formMode.value = 'edit'
-    editingKeyboard.value = item.keyword
+    editingKeyWord.value = item.keyword
     form.type = item.type
-    form.keyboard = item.keyword
+    form.keyword = item.keyword
     form.first_char = item.first_char
     form.list = item.list.map(p => ({ ...p }))
     // 编辑时把所有短语条目全部展开
@@ -130,14 +130,14 @@ export function usePhrasePage() {
       id: item.id,
       type: item.type,
       first_char: item.first_char,
-      keyword: item.keyboard,
+      keyword: item.keyword,
       list: list
     }
   }
 
   // 当前搜索关键词（去空格、转小写）；为空表示“浏览模式”
   function currentSearchKeyword() {
-    return search_keyboard_input_content.value.trim().toLowerCase()
+    return search_keyword_input_content.value.trim().toLowerCase()
   }
   const isSearching = computed(() => currentSearchKeyword() !== '')
 
@@ -258,23 +258,23 @@ export function usePhrasePage() {
   }
 
   function clear_search_input() {
-    search_keyboard_input_content.value = ''
-    search_keyboard_input.value?.focus()
+    search_keyword_input_content.value = ''
+    search_keyword_input.value?.focus()
   }
-  function clear_keyboard_content() {
-    form.keyboard = ''
-    keyboardInput.value?.focus()
+  function clear_keyword_content() {
+    form.keyword = ''
+    keywordInput.value?.focus()
   }
 
   const onSubmit = async () => {
-    form.keyboard = form.keyboard.trim().toLowerCase()
-    form.first_char = form.keyboard[0] ?? ''
+    form.keyword = form.keyword.trim().toLowerCase()
+    form.first_char = form.keyword[0] ?? ''
     form.list.forEach(item => {
       item.phrase = item.phrase.trim()
       item.translate = item.translate.trim()
     })
 
-    if (!form.keyboard) {
+    if (!form.keyword) {
       ElMessage({ message: '关键词不能为空', type: 'error', offset: 50, duration: 3000, customClass: 'no-hover-pause' })
       return
     }
@@ -296,11 +296,11 @@ export function usePhrasePage() {
 
     // 重复关键词检查：因列表是分页加载的，用后端 keyword_exists 判断
     // （编辑模式改了关键词才判重，原关键词本身不算重复）
-    const exists = await invoke('keyword_exists', { keyword: form.keyboard })
-    if (exists && form.keyboard !== editingKeyboard.value) {
+    const exists = await invoke('keyword_exists', { keyword: form.keyword })
+    if (exists && form.keyword !== editingKeyWord.value) {
       try {
         await ElMessageBox.confirm(
-          `关键词「${form.keyboard}」已存在，是否将当前内容追加到该词条？`,
+          `关键词「${form.keyword}」已存在，是否将当前内容追加到该词条？`,
           '提示',
           { confirmButtonText: '追加', cancelButtonText: '取消', type: 'warning' }
         )
@@ -314,91 +314,112 @@ export function usePhrasePage() {
 
     try {
       const raw = toRaw(form)
-      if (formMode.value === 'edit') {
-        await invoke('delete_phrase', { keyboard: editingKeyboard.value })
-      }
-      await invoke('save_phrase', {
+      const isEdit = formMode.value === 'edit'
+      const oldKeyword = editingKeyWord.value   // 捕获原关键词，避免下面复位后丢失
+
+      // 关键：在「乐观复位表单」之前，先把要写入后端的数据定稿成普通对象（list 提前 stringify 成字符串）。
+      // 否则面板复位会改写 form.keyword / form.list（raw 与 form 共享底层对象），
+      // 等异步 save 真正读取 raw 时拿到的是被清空后的空表单 —— 数据被覆盖丢失。
+      const savePayload = {
         type: raw.type,
         first_char: raw.first_char,
-        keyboard: raw.keyboard,
+        keyword: raw.keyword,
         list: JSON.stringify(raw.list),
-      })
-      ElMessage({
-        message: formMode.value === 'edit' ? '修改成功' : '保存成功',
-        type: 'success', offset: 50, duration: 3000, customClass: 'no-hover-pause'
-      })
-      await loadDataFromDb(true, true)
-      if (formMode.value === 'edit') {
-        add_content_panel_show.value = false
-        formMode.value = 'add'
-        editingKeyboard.value = ''
-        // 复位表单，避免下次打开“添加”时残留本次编辑的内容
-        form.keyboard = ''
-        form.first_char = ''
-        form.list = [{ phrase: '', translate: '' }]
-        activeNames.value = ['1']
-        savedAddState.value = {
-          type: form.type,
-          keyboard: '',
-          first_char: '',
-          list: [{ phrase: '', translate: '' }],
-          activeNames: ['1'],
-        }
-      } else {
-        form.keyboard = ''
-        form.first_char = ''
-        form.list = [{ phrase: '', translate: '' }]
-        activeNames.value = ['1']
-        savedAddState.value = {
-          type: form.type,
-          keyboard: '',
-          first_char: '',
-          list: [{ phrase: '', translate: '' }],
-          activeNames: ['1'],
-        }
-        await nextTick()
-        keyboardInput.value?.focus()
       }
+
+      // 1) 乐观更新：画面瞬时切换，不等后端写入。
+      if (isEdit) {
+        // 编辑保存完成：关闭面板回到列表。
+        // 仅把“原关键词”引用更新为已保存的关键词（便于下次再编辑时正确定位），表单内容不强制清空（面板已关，自然隐藏）。
+        editingKeyWord.value = savePayload.keyword
+        add_content_panel_show.value = false
+      } else {
+        // 添加保存完成：保留面板，复位为空白表单并聚焦关键词输入框，便于连续添加
+        formMode.value = 'add'
+        editingKeyWord.value = ''
+        form.keyword = ''
+        form.first_char = ''
+        form.list = [{ phrase: '', translate: '' }]
+        activeNames.value = ['1']
+        savedAddState.value = {
+          type: form.type,
+          keyword: '',
+          first_char: '',
+          list: [{ phrase: '', translate: '' }],
+          activeNames: ['1'],
+        }
+        nextTick(() => keywordInput.value?.focus())
+      }
+
+      // 2) 后端异步保存：编辑时先删原行再存（保持原 delete→save 顺序），
+      //    完成才弹成功并刷新列表，全程不阻塞 UI（面板已先关）
+      ;(async () => {
+        if (isEdit) {
+          await invoke('delete_phrase', { keyword: oldKeyword })
+        }
+        await invoke('save_phrase', savePayload)
+      })()
+        .then(() => {
+          ElMessage({
+            message: isEdit ? '修改成功' : '保存成功',
+            type: 'success', offset: 50, duration: 3000, customClass: 'no-hover-pause'
+          })
+          loadDataFromDb(true, true)
+        })
+        .catch((err) => {
+          console.error('保存失败', err)
+          ElMessage({ message: `保存失败：${err}`, type: 'error', offset: 50, duration: 3000, customClass: 'no-hover-pause' })
+        })
     } catch (err) {
-      console.error('保存失败', err)
+      console.error('保存前置失败', err)
       ElMessage({ message: `保存失败：${err}`, type: 'error', offset: 50, duration: 3000, customClass: 'no-hover-pause' })
     }
   }
 
   // 关键词重复时，把当前表单内容追加到已有词条（后端按 phrase 去重）
-  async function appendToExisting() {
-    try {
-      const raw = toRaw(form)
-      // 编辑模式下改了关键词触发重复：先把原词条删掉，再把内容并入已存在的词条
-      if (editingKeyboard.value && editingKeyboard.value !== form.keyboard) {
-        await invoke('delete_phrase', { keyboard: editingKeyboard.value })
+  // 乐观更新：先关面板+复位表单（瞬时切画面），再后台跑 delete_phrase→append_phrase，
+  // 跑完才弹“已追加到已有词条”并刷新列表，全程不阻塞 UI（面板已先关）。
+  function appendToExisting() {
+    const raw = toRaw(form)
+    const targetKeyword = form.keyword
+    const listStr = JSON.stringify(raw.list)
+    // 编辑模式下改了关键词触发重复：记下面板打开时的原词条关键词，用于先删原行
+    const editingKeyword = editingKeyWord.value
+
+    // 1) 乐观更新：追加完成保留面板（便于继续录入），仅复位表单内容，不等后端写入
+    formMode.value = 'add'
+    editingKeyWord.value = ''
+    form.keyword = ''
+    form.first_char = ''
+    form.list = [{ phrase: '', translate: '' }]
+    activeNames.value = ['1']
+    savedAddState.value = {
+      type: form.type,
+      keyword: '',
+      first_char: '',
+      list: [{ phrase: '', translate: '' }],
+      activeNames: ['1'],
+    }
+    nextTick(() => keywordInput.value?.focus())
+
+    // 2) 后端异步追加：完成才弹成功并刷新列表，不阻塞 UI（面板已先关）
+    ;(async () => {
+      if (editingKeyword && editingKeyword !== targetKeyword) {
+        await invoke('delete_phrase', { keyword: editingKeyword })
       }
       await invoke('append_phrase', {
-        keyword: form.keyboard,
-        list: JSON.stringify(raw.list),
+        keyword: targetKeyword,
+        list: listStr,
       })
-      ElMessage({ message: '已追加到已有词条', type: 'success', offset: 50, duration: 3000, customClass: 'no-hover-pause' })
-      await loadDataFromDb(true, true)
-      // 收尾：保留面板不关闭，复位表单（与“添加成功”一致）
-      formMode.value = 'add'
-      editingKeyboard.value = ''
-      form.keyboard = ''
-      form.first_char = ''
-      form.list = [{ phrase: '', translate: '' }]
-      activeNames.value = ['1']
-      savedAddState.value = {
-        type: form.type,
-        keyboard: '',
-        first_char: '',
-        list: [{ phrase: '', translate: '' }],
-        activeNames: ['1'],
-      }
-      await nextTick()
-      keyboardInput.value?.focus()
-    } catch (err) {
-      console.error('追加失败', err)
-      ElMessage({ message: `追加失败：${err}`, type: 'error', offset: 50, duration: 3000, customClass: 'no-hover-pause' })
-    }
+    })()
+      .then(() => {
+        ElMessage({ message: '已追加到已有词条', type: 'success', offset: 50, duration: 3000, customClass: 'no-hover-pause' })
+        loadDataFromDb(true, true)
+      })
+      .catch((err) => {
+        console.error('追加失败', err)
+        ElMessage({ message: `追加失败：${err}`, type: 'error', offset: 50, duration: 3000, customClass: 'no-hover-pause' })
+      })
   }
 
   async function deletePhrase(item) {
@@ -408,7 +429,7 @@ export function usePhrasePage() {
         cancelButtonText: '取消',
         type: 'warning',
       })
-      await invoke('delete_phrase', { keyboard: item.keyword })
+      await invoke('delete_phrase', { keyword: item.keyword })
       ElMessage({ message: '删除成功', type: 'success', offset: 50, duration: 3000, customClass: 'no-hover-pause' })
       await loadDataFromDb(true, true)
     } catch (err) {
@@ -481,13 +502,13 @@ export function usePhrasePage() {
 
   // 搜索框输入 → 立即重新加载第一页（与切换类型一致：输入即查、即时转圈）
   // 后端查库很快，且 loadSeq 并发守卫会丢弃过期请求、lastLoadKey 去重避免重复查询
-  watch(search_keyboard_input_content, () => {
+  watch(search_keyword_input_content, () => {
     loadDataFromDb()
   })
 
   function handleCharClick(char) {
     activeChar.value = char
-    search_keyboard_input_content.value = ''
+    search_keyword_input_content.value = ''
     loadDataFromDb() // 立即加载：点下去瞬间显示转圈，盖住查询耗时
   }
 
@@ -500,7 +521,19 @@ export function usePhrasePage() {
   })
 
   onMounted(async () => {
-    await loadDataFromDb()
+    // 等待 App 启动期的 ensure_init 完成再加载词库：避免首次安装时 db 尚未建好/写入就读取导致空白。
+    // 子组件 onMounted 先于父组件（App）执行，此时 appReady 仍为 false，故用 watch 延后首屏加载。
+    if (appReady.value) {
+      await loadDataFromDb()
+    } else {
+      const stop = watch(appReady, (v) => {
+        if (v) { stop(); loadDataFromDb() }
+      })
+      // 兜底：极端情况下初始化迟迟未回调（如后端异常），最多等待 10s 强制加载，避免卡死空白
+      setTimeout(() => {
+        if (!appReady.value) { stop(); loadDataFromDb() }
+      }, 10000)
+    }
     // 窗口尺寸变化后重算底部渐隐遮罩与顶部留白互补
     const onResize = () => updateListFade()
     window.addEventListener('resize', onResize)
@@ -517,8 +550,8 @@ export function usePhrasePage() {
     activeChar,
     handleCharClick,
     show_data,
-    search_keyboard_input,
-    search_keyboard_input_content,
+    search_keyword_input,
+    search_keyword_input_content,
     clear_search_input,
     filteredPhraseList,
     deletePhrase,
@@ -533,8 +566,8 @@ export function usePhrasePage() {
     allDelete,
     onSubmit,
     formMode,
-    keyboardInput,
-    clear_keyboard_content,
+    keywordInput,
+    clear_keyword_content,
     openAddForm,
     // 懒加载
     allPhraseList,

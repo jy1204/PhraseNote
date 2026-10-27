@@ -74,6 +74,10 @@ pub fn run() {
                 enabled: receiving.clone(),
             });
 
+            // 首次启动环境初始化 + 基础词迁移：已从 .setup 移至前端启动时调用
+            // （ensure_init 命令），以便窗口先渲染、前端先弹全局遮罩，再异步跑迁移，
+            // 避免启动期白屏。此处不再阻塞。
+
             // 启动 HTTP 接收服务
             let save_dir = get_subject_dir(&handle)
                 .unwrap_or_else(|_| PathBuf::from("./received"))
@@ -131,6 +135,7 @@ pub fn run() {
             crate::core::import::cancel_import,
             crate::english::phrase::resolve_duplicate_overwrite,
             crate::english::phrase::resolve_duplicates_batch,
+            crate::english::phrase::batch_entry_phrases,
             crate::core::device::start_scan,
             crate::core::device::stop_scan,
             crate::core::import::clear_received_files,
@@ -152,11 +157,13 @@ pub fn run() {
             crate::english::note::move_note,
             crate::english::note::batch_move_notes,
             crate::english::note::batch_delete_notes,
+            crate::english::note::batch_delete_folders,
             crate::english::note::update_note_content,
             crate::core::config::load_app_config,
             crate::core::config::save_app_config,
             crate::core::config::load_app_scheme,
-            crate::core::config::save_app_scheme
+            crate::core::config::save_app_scheme,
+            crate::core::init::ensure_init
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

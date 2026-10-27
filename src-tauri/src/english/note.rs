@@ -378,6 +378,24 @@ pub fn batch_delete_notes(
     Ok(())
 }
 
+// 批量删除多个目录（单事务、单开库；级联删其下所有文件）
+// ⚠️ 用于取代前端「逐个 delete_folder」的 N 次开库：把 1+N 次 open_db 降到 1 次。
+// 参数名必须 snake_case：folder_ids
+#[tauri::command(rename_all = "snake_case")]
+pub fn batch_delete_folders(
+    app: tauri::AppHandle,
+    folder_ids: Vec<String>,
+) -> Result<(), String> {
+    let mut conn = open_db(&app)?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    for fid in &folder_ids {
+        tx.execute("DELETE FROM folder_table WHERE id = ?1", params![fid])
+            .map_err(|e| e.to_string())?;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 // 单独保存文件富文本内容（参数名必须 snake_case：id / content）
 #[tauri::command(rename_all = "snake_case")]
 pub fn update_note_content(

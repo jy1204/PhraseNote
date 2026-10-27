@@ -5,22 +5,37 @@
 //   - save_phrase / load_all_phrases / delete_phrase：短语的增删查
 //   - resolve_duplicate_overwrite：导入冲突时覆盖短语列表
 //   - resolve_duplicates_batch：批量冲突裁决（一次 invoke 处理全部）
+//   - batch_entry_phrases：批处理录入（解析 AI 生成的 JSON 文本，按双行两态模型自动合并）
 // 这些命令由前端 PhrasePage.vue 直接 invoke（或导入流程间接调用）。
 // ============================================================
 
 use rusqlite::{params, Connection};
 use std::collections::HashSet;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use uuid;
 use serde_json;
+
+/// 返回“数据根目录”（工作库与 init.json 的共同父目录）。
+/// 桌面 = exe 所在目录下的 ./data；移动端 = app_data_dir（无需再加 data 层级）。
+/// 供 get_db_path 与 init 模块复用，保证路径一致。
+#[cfg(desktop)]
+pub fn get_data_root(_app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let exe_path = std::env::current_exe().map_err(|e| e.to_string())?;
+    let exe_dir = exe_path.parent().ok_or("无法获取exe所在目录")?;
+    Ok(exe_dir.join("data"))
+}
+
+#[cfg(mobile)]
+pub fn get_data_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    use tauri::Manager;
+    Ok(app.path().app_data_dir().map_err(|e| e.to_string())?)
+}
 
 /// 🖥️桌面端Windows：exe所在目录 → ./data/subject/english/phrase_db.db
 #[cfg(desktop)]
 pub fn get_db_path(_app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    let exe_path = std::env::current_exe().map_err(|e| e.to_string())?;
-    let exe_dir = exe_path.parent().ok_or("无法获取exe所在目录")?;
-
-    let dir = exe_dir.join("data").join("subject").join("english");
+    let dir = get_data_root(_app)?.join("subject").join("english");
     // 获取的路径文件phrase_db.db
     let db_file = dir.join("phrase_db.db");
     println!("[Desktop] db path: {:?}", db_file);
@@ -31,13 +46,55 @@ pub fn get_db_path(_app: &tauri::AppHandle) -> Result<PathBuf, String> {
 /// 📱手机端Android：app_data_dir/subject/english/phrase_db.db
 #[cfg(mobile)]
 pub fn get_db_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    use tauri::Manager;
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let dir = data_dir.join("subject").join("english");
+    let dir = get_data_root(app)?.join("subject").join("english");
     let db_file = dir.join("phrase_db.db");
     println!("[Mobile] db path: {:?}", db_file);
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(db_file)
+}
+
+// 导出：只抽取 source='user' 的行，生成一份临时 db 的字节流。
+// base 种子（source='base'）不随个人备份 / 互传走，符合双行两态模型约定。
+// 返回字节可直接作为 zip 条目写入，避免把 647 条 base 与 state=1 隐藏标记带进导出包。
+pub fn export_user_rows_bytes(db_path: &Path) -> Result<Vec<u8>, String> {
+    // rusqlite 无直接内存序列化 API，落到临时文件再读回字节。
+    // 临时文件放在源库同目录（app 自身数据目录，各平台均可写，含 Android），避免 temp_dir 不可写。
+    let tmp_path = db_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join(format!("phrase_export_{}.db", uuid::Uuid::new_v4()));
+    let _ = fs::remove_file(&tmp_path);
+
+    // 打开【源库】（含真实数据），挂接临时库，把 source='user' 的行抽到临时库。
+    // 注意：务必从源库 SELECT，而非从刚创建的空临时库 SELECT（否则抽出 0 行）。
+    let src = Connection::open(db_path).map_err(|e| e.to_string())?;
+    src.execute(
+        "ATTACH DATABASE ? AS export_tmp",
+        params![tmp_path.to_string_lossy().to_string()],
+    )
+    .map_err(|e| e.to_string())?;
+    src.execute(
+        "CREATE TABLE IF NOT EXISTS export_tmp.phrase_table (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            type TEXT, first_char TEXT, keyword TEXT, list TEXT,
+            source TEXT DEFAULT 'user', state INTEGER DEFAULT 0
+        )",
+        [],
+    )
+    .map_err(|e| e.to_string())?;
+    src.execute(
+        "INSERT INTO export_tmp.phrase_table (type, first_char, keyword, list, source, state)
+         SELECT type, first_char, keyword, list, source, state
+         FROM phrase_table WHERE source='user'",
+        [],
+    )
+    .map_err(|e| e.to_string())?;
+    src.execute("DETACH DATABASE export_tmp", [])
+        .map_err(|e| e.to_string())?;
+
+    let bytes = fs::read(&tmp_path).map_err(|e| e.to_string())?;
+    let _ = fs::remove_file(&tmp_path);
+    Ok(bytes)
 }
 
 // 保存一条 phrase 记录
@@ -46,7 +103,7 @@ pub fn save_phrase(
     app: tauri::AppHandle,
     r#type: String,
     first_char: String,
-    keyboard: String,
+    keyword: String,
     list: String,
 ) -> Result<(), String> {
     let db_path = get_db_path(&app)?;
@@ -57,30 +114,56 @@ pub fn save_phrase(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             type TEXT,
             first_char TEXT,
-            keyboard TEXT,
-            list TEXT
+            keyword TEXT,
+            list TEXT,
+            source TEXT DEFAULT 'user',
+            state INTEGER DEFAULT 0
         )",
         [],
     )
     .map_err(|e| e.to_string())?;
 
-    let exists: bool = conn
+    // 双行模型路由：base 只读，用户改动一律落 user 行
+    //   - 已有 user 行 → 原地更新
+    //   - 已有 base 行 → 另建 user 覆盖行，并把对应 base 标 state=1（内容不动）
+    //   - 全新关键词 → 直接插入 user 行
+    let existing_source: Option<String> = conn
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM phrase_table WHERE keyboard = ?1)",
-            params![keyboard],
+            "SELECT source FROM phrase_table WHERE keyword = ?1 LIMIT 1",
+            params![keyword],
             |row| row.get(0),
         )
-        .map_err(|e| e.to_string())?;
+        .ok();
 
-    if exists {
-        return Err(format!("关键词「{}」已存在", keyboard));
+    match existing_source {
+        Some(s) if s == "user" => {
+            conn.execute(
+                "UPDATE phrase_table SET type=?1, first_char=?2, list=?3 WHERE source='user' AND keyword=?4",
+                params![r#type, first_char, list, keyword],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        Some(_) => {
+            // 覆盖 base：建 user 行 + 标记 base 隐藏
+            conn.execute(
+                "INSERT INTO phrase_table (type, first_char, keyword, list, source, state) VALUES (?1,?2,?3,?4,'user',0)",
+                params![r#type, first_char, keyword, list],
+            )
+            .map_err(|e| e.to_string())?;
+            conn.execute(
+                "UPDATE phrase_table SET state=1 WHERE source='base' AND keyword=?1",
+                params![keyword],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        None => {
+            conn.execute(
+                "INSERT INTO phrase_table (type, first_char, keyword, list, source, state) VALUES (?1,?2,?3,?4,'user',0)",
+                params![r#type, first_char, keyword, list],
+            )
+            .map_err(|e| e.to_string())?;
+        }
     }
-
-    conn.execute(
-        "INSERT INTO phrase_table (type, first_char, keyboard, list) VALUES (?1, ?2, ?3, ?4)",
-        params![r#type, first_char, keyboard, list],
-    )
-    .map_err(|e| e.to_string())?;
 
     Ok(())
 }
@@ -95,8 +178,10 @@ pub fn load_all_phrases(app: tauri::AppHandle) -> Result<Vec<serde_json::Value>,
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             type TEXT,
             first_char TEXT,
-            keyboard TEXT,
-            list TEXT
+            keyword TEXT,
+            list TEXT,
+            source TEXT DEFAULT 'user',
+            state INTEGER DEFAULT 0
         )",
         [],
     )
@@ -104,7 +189,7 @@ pub fn load_all_phrases(app: tauri::AppHandle) -> Result<Vec<serde_json::Value>,
 
     let mut stmt = conn
         .prepare(
-            "SELECT id, type, first_char, keyboard, list FROM phrase_table ORDER BY keyboard ASC",
+            "SELECT id, type, first_char, keyword, list FROM phrase_table ORDER BY keyword ASC",
         )
         .map_err(|e| e.to_string())?;
 
@@ -114,7 +199,7 @@ pub fn load_all_phrases(app: tauri::AppHandle) -> Result<Vec<serde_json::Value>,
                 "id": row.get::<_,i64>(0)?,
                 "type": row.get::<_,String>(1)?,
                 "first_char": row.get::<_,String>(2)?,
-                "keyboard": row.get::<_,String>(3)?,
+                "keyword": row.get::<_,String>(3)?,
                 "list": row.get::<_,String>(4)?
             }))
         })
@@ -127,24 +212,40 @@ pub fn load_all_phrases(app: tauri::AppHandle) -> Result<Vec<serde_json::Value>,
     Ok(result)
 }
 
-// 删除短语
+// 删除短语（双行模型路由）
 #[tauri::command(rename_all = "snake_case")]
-pub fn delete_phrase(app: tauri::AppHandle, keyboard: String) -> Result<(), String> {
+pub fn delete_phrase(app: tauri::AppHandle, keyword: String) -> Result<(), String> {
     let db_path = get_db_path(&app)?;
     let conn = Connection::open(&db_path).map_err(|e| e.to_string())?;
 
-    let affected = conn
+    //   - 先删 user 行（覆盖类或纯 user 行）；删掉后把对应 base 标 state=1 隐藏（不改 base 内容）
+    //   - 若没有 user 行 → 这是 base 词，软隐藏（state=1）而非真删
+    let user_deleted = conn
         .execute(
-            "DELETE FROM phrase_table WHERE keyboard = ?1",
-            params![keyboard],
+            "DELETE FROM phrase_table WHERE source='user' AND keyword = ?1",
+            params![keyword],
         )
         .map_err(|e| e.to_string())?;
 
-    if affected == 0 {
-        return Err(format!("未找到关键词「{}」", keyboard));
+    if user_deleted > 0 {
+        conn.execute(
+            "UPDATE phrase_table SET state=1 WHERE source='base' AND keyword=?1 AND state=0",
+            params![keyword],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    } else {
+        let base_updated = conn
+            .execute(
+                "UPDATE phrase_table SET state=1 WHERE source='base' AND keyword = ?1",
+                params![keyword],
+            )
+            .map_err(|e| e.to_string())?;
+        if base_updated == 0 {
+            return Err(format!("未找到关键词「{}」", keyword));
+        }
+        Ok(())
     }
-
-    Ok(())
 }
 
 // 导入冲突时：用新列表覆盖已有短语
@@ -158,11 +259,26 @@ pub async fn resolve_duplicate_overwrite(
     tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
         let db_path = get_db_path(&app)?;
         let conn = Connection::open(&db_path).map_err(|e| e.to_string())?;
-        conn.execute(
-            "UPDATE phrase_table SET list = ?1 WHERE keyboard = ?2",
-            params![new_list, keyword],
-        )
-        .map_err(|e| e.to_string())?;
+        // base 只读：覆盖落到 user 行；无 user 行则建 user 覆盖行并隐藏 base
+        let updated = conn
+            .execute(
+                "UPDATE phrase_table SET list = ?1 WHERE source='user' AND keyword = ?2",
+                params![new_list, keyword],
+            )
+            .map_err(|e| e.to_string())?;
+        if updated == 0 {
+            conn.execute(
+                "INSERT INTO phrase_table (type, first_char, keyword, list, source, state) \
+                 SELECT type, first_char, ?1, ?2, 'user', 0 FROM phrase_table WHERE keyword=?1 AND source='base' LIMIT 1",
+                params![keyword, new_list],
+            )
+            .map_err(|e| e.to_string())?;
+            conn.execute(
+                "UPDATE phrase_table SET state=1 WHERE source='base' AND keyword=?1",
+                params![keyword],
+            )
+            .map_err(|e| e.to_string())?;
+        }
         Ok(())
     })
     .await
@@ -170,15 +286,21 @@ pub async fn resolve_duplicate_overwrite(
 }
 
 // 追加合并核心逻辑：按 phrase 去重合并 new_list 进已有 list（供单条命令与批量命令共用）
+// base 只读：若目标行是 base，则把合并结果落为 user 覆盖行，并把 base 标 state=1
 fn apply_append(conn: &Connection, keyword: &str, list: &str) -> Result<(), String> {
-    // 取出已有 list（关键词不存在时视为空数组）
-    let existing: String = conn
+    // 取现有 list 与是否为 base 行（优先 user 行；无则 base 行）
+    let row: Option<(String, bool)> = conn
         .query_row(
-            "SELECT list FROM phrase_table WHERE keyboard = ?1",
+            "SELECT list, (source='base') FROM phrase_table WHERE keyword=?1 ORDER BY source DESC LIMIT 1",
             params![keyword],
-            |row| row.get(0),
+            |r| Ok((r.get::<_,String>(0)?, r.get::<_,bool>(1)?)),
         )
-        .unwrap_or_else(|_| "[]".to_string());
+        .ok();
+
+    let (existing, is_base) = match row {
+        Some((l, b)) => (l, b),
+        None => ("[]".to_string(), false),
+    };
 
     let mut existing_vec: Vec<serde_json::Value> =
         serde_json::from_str(&existing).unwrap_or_default();
@@ -209,11 +331,27 @@ fn apply_append(conn: &Connection, keyword: &str, list: &str) -> Result<(), Stri
     }
 
     let merged = serde_json::to_string(&existing_vec).map_err(|e| e.to_string())?;
-    conn.execute(
-        "UPDATE phrase_table SET list = ?1 WHERE keyboard = ?2",
-        params![merged, keyword],
-    )
-    .map_err(|e| e.to_string())?;
+
+    if is_base {
+        // base 只读：落 user 覆盖行，base 标 state=1
+        conn.execute(
+            "INSERT INTO phrase_table (type, first_char, keyword, list, source, state) \
+             SELECT type, first_char, ?1, ?2, 'user', 0 FROM phrase_table WHERE keyword=?1 AND source='base' LIMIT 1",
+            params![keyword, merged],
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE phrase_table SET state=1 WHERE source='base' AND keyword=?1",
+            params![keyword],
+        )
+        .map_err(|e| e.to_string())?;
+    } else {
+        conn.execute(
+            "UPDATE phrase_table SET list = ?1 WHERE keyword = ?2 AND source='user'",
+            params![merged, keyword],
+        )
+        .map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
 
@@ -233,21 +371,41 @@ pub async fn resolve_duplicates_batch(
     tauri::async_runtime::spawn_blocking(move || -> Result<serde_json::Value, String> {
         let db_path = get_db_path(&app)?;
         let conn = Connection::open(&db_path).map_err(|e| e.to_string())?;
+        // 整批共用一个事务：N 条写入只 fsync 一次，避免每条独立 autocommit 在 Windows 上逐个刷盘导致「转圈好几秒」
+        conn.execute("BEGIN", []).map_err(|e| e.to_string())?;
         let total = items.len();
         let mut resolved = 0usize;
         let mut errors: Vec<serde_json::Value> = Vec::new();
 
         for item in &items {
-            let r = if action == "overwrite" {
-                conn.execute(
-                    "UPDATE phrase_table SET list = ?1 WHERE keyboard = ?2",
-                    params![item.new_list, item.keyword],
-                )
-                .map(|_| ())
-                .map_err(|e| e.to_string())
-            } else {
-                apply_append(&conn, &item.keyword, &item.new_list)
-            };
+            // 内层闭包捕获单条错误，保证一条失败只记 errors、不中断整批（仍统一 COMMIT）
+            let r = (|| -> Result<(), String> {
+                if action == "overwrite" {
+                    // base 只读：覆盖落到 user 行；无 user 行则建 user 覆盖行并隐藏 base
+                    let updated = conn
+                        .execute(
+                            "UPDATE phrase_table SET list = ?1 WHERE source='user' AND keyword = ?2",
+                            params![item.new_list, item.keyword],
+                        )
+                        .map_err(|e| e.to_string())?;
+                    if updated == 0 {
+                        conn.execute(
+                            "INSERT INTO phrase_table (type, first_char, keyword, list, source, state) \
+                             SELECT type, first_char, ?1, ?2, 'user', 0 FROM phrase_table WHERE keyword=?1 AND source='base' LIMIT 1",
+                            params![item.keyword, item.new_list],
+                        )
+                        .map_err(|e| e.to_string())?;
+                        conn.execute(
+                            "UPDATE phrase_table SET state=1 WHERE source='base' AND keyword=?1",
+                            params![item.keyword],
+                        )
+                        .map_err(|e| e.to_string())?;
+                    }
+                } else {
+                    apply_append(&conn, &item.keyword, &item.new_list)?;
+                }
+                Ok(())
+            })();
             match r {
                 Ok(()) => resolved += 1,
                 Err(e) => errors.push(serde_json::json!({
@@ -257,10 +415,361 @@ pub async fn resolve_duplicates_batch(
             }
         }
 
+        conn.execute("COMMIT", []).map_err(|e| e.to_string())?;
         Ok(serde_json::json!({
             "total": total,
             "resolved": resolved,
             "errors": errors,
+        }))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+// ============================================================
+// 批处理录入（帮助 → 批处理短语）：把 AI 生成的 JSON 文本按双行两态
+// 模型自动合并入库（无冲突弹窗，固定规则，适合连续大批量录入）。
+//   · 解析容错：剥 markdown 围栏 → 直接 parse → 失败截取首尾花括号再 parse
+//   · 归一化：type 只认 "A~Z"/"#"（否则按 keyword 首字符推断）；
+//              first_char 不轻信输入，一律从 keyword 重新推导；
+//              translate 缺省/非字符串 → ""；"= xxx" 同义项原样保留
+//   · 去重：同批内与库内均按 phrase 大小写不敏感去重
+//   · 合并规则（与 save_phrase / apply_append 同源）：
+//       库内无行      → 直接插 user 行（新增）
+//       已有 user 行  → 去重追加进该行（追加）
+//       仅 base 行    → 插 user 覆盖行（base.list + 新内容），base 标 state=1（合并）
+//   · 同批内相同 keyword 先合并；单命令单事务单连接，避免 N 次开库与 SQLITE_BUSY
+// ============================================================
+
+// 单条录入失败信息（keyword + 原因），供前端在浮窗里展示
+#[derive(Debug, serde::Serialize)]
+pub struct BatchEntryFailure {
+    pub keyword: String,
+    pub reason: String,
+}
+
+// 归一化后的单组短语（keyword / type / first_char / list[{phrase, translate}]）
+#[derive(Debug)]
+struct BatchEntry {
+    keyword: String,
+    entry_type: String,
+    first_char: String,
+    list: Vec<serde_json::Value>,
+}
+
+// 容错解析：从文本中取出 phrases 数组（Value 形式），失败返回可读原因
+fn parse_batch_json(text: &str) -> Result<Vec<serde_json::Value>, String> {
+    let mut s = text.trim();
+    if s.is_empty() {
+        return Err("请先粘贴内容".to_string());
+    }
+    // 剥掉 markdown 代码围栏（```json ... ``` 或裸 ```）：去掉首行与结尾的 ```
+    if s.starts_with("```") {
+        if let Some(nl) = s.find('\n') {
+            s = s[nl + 1..].trim_start();
+        }
+        if s.ends_with("```") {
+            s = s[..s.len() - 3].trim_end();
+        }
+    }
+    // 直接 parse；失败则截取第一个 { 到最后一个 } 再 parse（兜住 AI 在 JSON 前后加的说明文字）
+    let value = match serde_json::from_str::<serde_json::Value>(s) {
+        Ok(v) => v,
+        Err(e1) => {
+            let start = s.find('{');
+            let end = s.rfind('}');
+            match (start, end) {
+                (Some(a), Some(b)) if b > a => serde_json::from_str::<serde_json::Value>(&s[a..=b])
+                    .map_err(|e2| format!("JSON 解析失败：{}", e2))?,
+                _ => return Err(format!("JSON 解析失败：{}", e1)),
+            }
+        }
+    };
+    value
+        .get("phrases")
+        .and_then(|p| p.as_array())
+        .cloned()
+        .ok_or_else(|| "JSON 中缺少 phrases 数组".to_string())
+}
+
+// 归一化单组：type 推断、first_char 重新推导、list 清洗与组内去重
+fn normalize_batch_entry(raw: &serde_json::Value) -> Result<BatchEntry, String> {
+    let keyword = raw
+        .get("keyword")
+        .and_then(|k| k.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if keyword.is_empty() {
+        return Err("缺少关键词".to_string());
+    }
+
+    // type：只认 "A~Z" / "#"，缺失或非法时按 keyword 首字符推断
+    let entry_type = match raw.get("type").and_then(|t| t.as_str()).unwrap_or("").trim() {
+        "A~Z" => "A~Z".to_string(),
+        "#" => "#".to_string(),
+        _ => {
+            if keyword
+                .chars()
+                .next()
+                .map(|c| c.is_ascii_alphabetic())
+                .unwrap_or(false)
+            {
+                "A~Z".to_string()
+            } else {
+                "#".to_string()
+            }
+        }
+    };
+
+    // first_char：一律从 keyword 重新推导（AI 可能漏填/填错）
+    //   A~Z → keyword 中第一个英文字母，转小写；# → keyword 第一个字符
+    let first_char = if entry_type == "A~Z" {
+        keyword
+            .chars()
+            .find(|c| c.is_ascii_alphabetic())
+            .map(|c| c.to_ascii_lowercase().to_string())
+            .unwrap_or_default()
+    } else {
+        keyword
+            .chars()
+            .next()
+            .map(|c| c.to_string())
+            .unwrap_or_default()
+    };
+    if first_char.is_empty() {
+        return Err("无法推导首字符".to_string());
+    }
+
+    // list：phrase trim 后必填；translate 缺省/非字符串 → ""；组内按 phrase 大小写不敏感去重
+    let mut list: Vec<serde_json::Value> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    if let Some(arr) = raw.get("list").and_then(|l| l.as_array()) {
+        for item in arr {
+            let phrase = item
+                .get("phrase")
+                .and_then(|p| p.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if phrase.is_empty() {
+                continue;
+            }
+            if !seen.insert(phrase.to_lowercase()) {
+                continue;
+            }
+            let translate = item
+                .get("translate")
+                .and_then(|t| t.as_str())
+                .unwrap_or("")
+                .to_string();
+            list.push(serde_json::json!({ "phrase": phrase, "translate": translate }));
+        }
+    }
+    if list.is_empty() {
+        return Err("没有有效的短语".to_string());
+    }
+
+    Ok(BatchEntry {
+        keyword,
+        entry_type,
+        first_char,
+        list,
+    })
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn batch_entry_phrases(
+    app: tauri::AppHandle,
+    json_text: String,
+) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<serde_json::Value, String> {
+        // ① 解析 + 归一化（纯内存，不写库）；单条无效只记失败，不影响其他条目
+        let raw_items = parse_batch_json(&json_text)?;
+        if raw_items.is_empty() {
+            return Err("没有可录入的内容".to_string());
+        }
+        let mut failures: Vec<BatchEntryFailure> = Vec::new();
+        let mut entries: Vec<BatchEntry> = Vec::new();
+        for raw in &raw_items {
+            match normalize_batch_entry(raw) {
+                Ok(e) => entries.push(e),
+                Err(reason) => failures.push(BatchEntryFailure {
+                    keyword: raw
+                        .get("keyword")
+                        .and_then(|k| k.as_str())
+                        .unwrap_or("")
+                        .trim()
+                        .to_string(),
+                    reason,
+                }),
+            }
+        }
+
+        // ② 同批内相同 keyword 先合并（保持首次出现顺序；type/first_char 由 keyword 决定，天然一致）
+        let mut order: Vec<String> = Vec::new();
+        let mut by_keyword: std::collections::HashMap<String, BatchEntry> =
+            std::collections::HashMap::new();
+        for e in entries {
+            if let Some(dst) = by_keyword.get_mut(&e.keyword) {
+                let mut seen: HashSet<String> = dst
+                    .list
+                    .iter()
+                    .filter_map(|v| v.get("phrase").and_then(|p| p.as_str()).map(|s| s.to_lowercase()))
+                    .collect();
+                for item in e.list {
+                    let key = item
+                        .get("phrase")
+                        .and_then(|p| p.as_str())
+                        .unwrap_or("")
+                        .to_lowercase();
+                    if seen.insert(key) {
+                        dst.list.push(item);
+                    }
+                }
+            } else {
+                order.push(e.keyword.clone());
+                by_keyword.insert(e.keyword.clone(), e);
+            }
+        }
+
+        // ③ 开库 + 单事务写入（N 组只开一次库、只 fsync 一次）
+        let db_path = get_db_path(&app)?;
+        let conn = Connection::open(&db_path).map_err(|e| e.to_string())?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS phrase_table (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                type TEXT, first_char TEXT, keyword TEXT, list TEXT,
+                source TEXT DEFAULT 'user', state INTEGER DEFAULT 0
+            )",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+        // 逐组按 keyword 查重，建索引加速（旧库无此索引时补建）
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_keyword ON phrase_table(keyword)",
+            [],
+        )
+        .ok();
+
+        conn.execute("BEGIN", []).map_err(|e| e.to_string())?;
+
+        let mut added = 0usize; // 全新 keyword 组数
+        let mut appended = 0usize; // 追加进已有 user 行的组数
+        let mut merged_cnt = 0usize; // 与 base 合并（base 被隐藏）的组数
+        let mut skipped_phrases = 0usize; // 库内已存在被跳过的短语条数
+        let mut skipped_groups = 0usize; // 整组内容已全部存在的组数
+
+        for keyword in &order {
+            let entry = match by_keyword.get(keyword) {
+                Some(e) => e,
+                None => continue,
+            };
+
+            // 查库内现状：优先 user 行（'user' > 'base'，DESC 取前）；无则 base 行
+            let existing: Option<(String, bool)> = conn
+                .query_row(
+                    "SELECT list, (source='base') FROM phrase_table WHERE keyword=?1 ORDER BY source DESC LIMIT 1",
+                    params![keyword],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?)),
+                )
+                .ok();
+
+            // 库内该 keyword 已有短语集合（小写键），用于过滤与计数
+            let existing_phrases: HashSet<String> = existing
+                .as_ref()
+                .map(|(l, _)| {
+                    serde_json::from_str::<serde_json::Value>(l)
+                        .ok()
+                        .and_then(|v| v.as_array().cloned())
+                        .unwrap_or_default()
+                        .iter()
+                        .filter_map(|v| v.get("phrase").and_then(|p| p.as_str()).map(|s| s.to_lowercase()))
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            // 过滤掉库内已存在的（大小写不敏感）
+            let to_add: Vec<serde_json::Value> = entry
+                .list
+                .iter()
+                .filter(|item| {
+                    let p = item.get("phrase").and_then(|p| p.as_str()).unwrap_or("").to_lowercase();
+                    !existing_phrases.contains(&p)
+                })
+                .cloned()
+                .collect();
+            skipped_phrases += entry.list.len() - to_add.len();
+            if to_add.is_empty() {
+                skipped_groups += 1;
+                continue;
+            }
+
+            let list_json = serde_json::to_string(&to_add).map_err(|e| e.to_string())?;
+
+            // 内层闭包隔离单组错误：一条写失败只记 failures，不中断整批（仍统一 COMMIT）
+            let r = (|| -> Result<(), String> {
+                match &existing {
+                    None => {
+                        // 全新技术 → 直接插 user 行
+                        conn.execute(
+                            "INSERT INTO phrase_table (type, first_char, keyword, list, source, state) \
+                             VALUES (?1,?2,?3,?4,'user',0)",
+                            params![entry.entry_type, entry.first_char, entry.keyword, list_json],
+                        )
+                        .map_err(|e| e.to_string())?;
+                    }
+                    Some((_, false)) => {
+                        // 已有 user 行 → 去重追加（复用 apply_append 的 UPDATE 分支）
+                        apply_append(&conn, &entry.keyword, &list_json)?;
+                    }
+                    Some((existing_list, true)) => {
+                        // 仅 base 行 → 插 user 覆盖行（base.list + 新内容），base 标 state=1。
+                        // 不用 apply_append：它从 base 行复制 type/first_char，
+                        // 这里用本批归一化后的值，保证与录入内容一致。
+                        let mut base_vec: Vec<serde_json::Value> =
+                            serde_json::from_str(existing_list).unwrap_or_default();
+                        base_vec.extend(to_add.iter().cloned());
+                        let merged_json = serde_json::to_string(&base_vec).map_err(|e| e.to_string())?;
+                        conn.execute(
+                            "INSERT INTO phrase_table (type, first_char, keyword, list, source, state) \
+                             VALUES (?1,?2,?3,?4,'user',0)",
+                            params![entry.entry_type, entry.first_char, entry.keyword, merged_json],
+                        )
+                        .map_err(|e| e.to_string())?;
+                        conn.execute(
+                            "UPDATE phrase_table SET state=1 WHERE source='base' AND keyword=?1",
+                            params![entry.keyword],
+                        )
+                        .map_err(|e| e.to_string())?;
+                    }
+                }
+                Ok(())
+            })();
+
+            match r {
+                Ok(()) => match &existing {
+                    None => added += 1,
+                    Some((_, false)) => appended += 1,
+                    Some((_, true)) => merged_cnt += 1,
+                },
+                Err(e) => failures.push(BatchEntryFailure {
+                    keyword: entry.keyword.clone(),
+                    reason: e,
+                }),
+            }
+        }
+
+        conn.execute("COMMIT", []).map_err(|e| e.to_string())?;
+
+        Ok(serde_json::json!({
+            "total_groups": order.len(),
+            "added": added,
+            "appended": appended,
+            "merged": merged_cnt,
+            "skipped_phrases": skipped_phrases,
+            "skipped_groups": skipped_groups,
+            "failed": failures,
         }))
     })
     .await
@@ -283,8 +792,10 @@ pub fn load_phrases_page(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             type TEXT,
             first_char TEXT,
-            keyboard TEXT,
-            list TEXT
+            keyword TEXT,
+            list TEXT,
+            source TEXT DEFAULT 'user',
+            state INTEGER DEFAULT 0
         )",
         [],
     )
@@ -297,26 +808,30 @@ pub fn load_phrases_page(
     let char_filter = char.trim();
     let is_letter = !(char_filter.is_empty() || char_filter == "*" || char_filter == "#");
 
-    let where_sql: String = if is_letter {
-        String::from("WHERE lower(substr(keyboard,1,1)) = lower(?1)")
+    // 双行模型加载：user 行始终显示；base 行仅当 state=0 且未被同 keyword 的 user 行覆盖时才显示
+    // （base 被覆盖时 state=1，或存在 user 覆盖行 → 都隐藏，由 user 行代表该词，避免重复/旧版显示）
+    let union_sql = r"SELECT id, type, first_char, keyword, list FROM phrase_table WHERE source='user' UNION ALL SELECT id, type, first_char, keyword, list FROM phrase_table b WHERE b.source='base' AND b.state=0 AND NOT EXISTS (SELECT 1 FROM phrase_table u WHERE u.source='user' AND u.keyword=b.keyword)";
+
+    let inner_filter: String = if is_letter {
+        String::from("WHERE lower(substr(sub.keyword,1,1)) = lower(?1)")
     } else if char_filter == "#" {
         // 中文首字符：CJK 统一表意文字区间（首字符直接比较，避免依赖 unicode() 函数）
-        String::from("WHERE substr(keyboard,1,1) >= '一' AND substr(keyboard,1,1) <= '鿿'")
+        String::from("WHERE substr(sub.keyword,1,1) >= '一' AND substr(sub.keyword,1,1) <= '鿿'")
     } else {
         String::new()
     };
 
-    let select_sql = if is_letter {
-        format!(
-            "SELECT id, type, first_char, keyboard, list FROM phrase_table {} ORDER BY keyboard ASC LIMIT ?2 OFFSET ?3",
-            where_sql
-        )
-    } else {
-        format!(
-            "SELECT id, type, first_char, keyboard, list FROM phrase_table {} ORDER BY keyboard ASC LIMIT ?1 OFFSET ?2",
-            where_sql
-        )
-    };
+    // 外层套过滤 + 排序 + 分页；列序保持 id,type,first_char,keyword,list 与前端一致
+    let select_sql = format!(
+        "SELECT * FROM ({}) sub {} ORDER BY sub.keyword ASC {}",
+        union_sql,
+        inner_filter,
+        if is_letter {
+            "LIMIT ?2 OFFSET ?3"
+        } else {
+            "LIMIT ?1 OFFSET ?2"
+        }
+    );
     let mut stmt = conn.prepare(&select_sql).map_err(|e| e.to_string())?;
 
     let map_row = |row: &rusqlite::Row| -> rusqlite::Result<serde_json::Value> {
@@ -324,7 +839,7 @@ pub fn load_phrases_page(
             "id": row.get::<_,i64>(0)?,
             "type": row.get::<_,String>(1)?,
             "first_char": row.get::<_,String>(2)?,
-            "keyboard": row.get::<_,String>(3)?,
+            "keyword": row.get::<_,String>(3)?,
             "list": row.get::<_,String>(4)?
         }))
     };
@@ -341,7 +856,10 @@ pub fn load_phrases_page(
         rows_vec.push(r.map_err(|e| e.to_string())?);
     }
 
-    let count_sql = format!("SELECT COUNT(*) FROM phrase_table {}", where_sql);
+    let count_sql = format!(
+        "SELECT COUNT(*) FROM ({}) sub {}",
+        union_sql, inner_filter
+    );
     let total: i64 = if is_letter {
         conn.query_row(&count_sql, params![char_filter], |row| row.get(0))
     } else {
@@ -368,8 +886,10 @@ pub fn search_phrases(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             type TEXT,
             first_char TEXT,
-            keyboard TEXT,
-            list TEXT
+            keyword TEXT,
+            list TEXT,
+            source TEXT DEFAULT 'user',
+            state INTEGER DEFAULT 0
         )",
         [],
     )
@@ -378,11 +898,14 @@ pub fn search_phrases(
     // 模糊匹配：%keyword%；SQLite 的 LIKE 对 ASCII 默认不区分大小写
     let pattern = format!("%{}%", keyword);
 
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, type, first_char, keyboard, list FROM phrase_table WHERE keyboard LIKE ?1 ORDER BY keyboard ASC LIMIT ?2 OFFSET ?3",
-        )
-        .map_err(|e| e.to_string())?;
+    // 双行模型：搜索同样 user 优先，base 仅 state=0 且无 user 覆盖才出现
+    let union_sql = r"SELECT id, type, first_char, keyword, list FROM phrase_table WHERE source='user' UNION ALL SELECT id, type, first_char, keyword, list FROM phrase_table b WHERE b.source='base' AND b.state=0 AND NOT EXISTS (SELECT 1 FROM phrase_table u WHERE u.source='user' AND u.keyword=b.keyword)";
+
+    let select_sql = format!(
+        "SELECT * FROM ({}) sub WHERE sub.keyword LIKE ?1 ORDER BY sub.keyword ASC LIMIT ?2 OFFSET ?3",
+        union_sql
+    );
+    let mut stmt = conn.prepare(&select_sql).map_err(|e| e.to_string())?;
 
     let rows = stmt
         .query_map(params![pattern, limit, offset], |row| {
@@ -390,7 +913,7 @@ pub fn search_phrases(
                 "id": row.get::<_,i64>(0)?,
                 "type": row.get::<_,String>(1)?,
                 "first_char": row.get::<_,String>(2)?,
-                "keyboard": row.get::<_,String>(3)?,
+                "keyword": row.get::<_,String>(3)?,
                 "list": row.get::<_,String>(4)?
             }))
         })
@@ -403,7 +926,10 @@ pub fn search_phrases(
 
     let total: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM phrase_table WHERE keyboard LIKE ?1",
+            &format!(
+                "SELECT COUNT(*) FROM ({}) sub WHERE sub.keyword LIKE ?1",
+                union_sql
+            ),
             params![pattern],
             |row| row.get(0),
         )
@@ -419,7 +945,7 @@ pub fn keyword_exists(app: tauri::AppHandle, keyword: String) -> Result<bool, St
     let conn = Connection::open(&db_path).map_err(|e| e.to_string())?;
     let exists: bool = conn
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM phrase_table WHERE keyboard = ?1)",
+            "SELECT EXISTS(SELECT 1 FROM phrase_table WHERE keyword = ?1)",
             params![keyword],
             |row| row.get(0),
         )
@@ -443,7 +969,7 @@ pub async fn append_phrase(
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 type TEXT,
                 first_char TEXT,
-                keyboard TEXT,
+                keyword TEXT,
                 list TEXT
             )",
             [],
