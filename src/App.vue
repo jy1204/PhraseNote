@@ -278,6 +278,10 @@
 // Tauri 核心调用、事件监听API
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+// 安卓硬件返回键（Tauri 2.9+ 内置）：监听后系统不再走默认行为，由我们统一分发
+import { onBackButtonPress, exit } from '@tauri-apps/api/app'
+// 返回键「可关闭界面」栈：界面打开入栈、关闭出栈，返回键关掉最上面一个
+import { bindBackClosable, consumeBackPress } from './assets/js/backStack.js'
 // Tauri 文件对话框：保存、打开文件
 import { save, open } from '@tauri-apps/plugin-dialog'
 // 外部状态
@@ -1088,6 +1092,8 @@ async function openImportDialog() {
 // ======================【生命周期】======================
 // 用来保存 取消监听的函数,表示“停止监听某个事件的函数”
 let unlisteners: UnlistenFn[] = []
+// 安卓返回键监听的注销函数（null = 未注册成功）
+let backButtonUnlisten: (() => void) | null = null
 
 onMounted(async () => {
   // 启动期全局初始化：弹遮罩 → 跑 ensure_init（建 init.json / 基础词迁移）→ 收遮罩。
@@ -1103,6 +1109,42 @@ onMounted(async () => {
     phraseDataVersion.value++
     noteDataVersion.value++
   }
+
+  // 安卓硬件返回键统一入口（桌面端永不触发，注册无副作用）：
+  // 1. 先走「关闭栈」——关掉最上面一个打开中的界面（互传发送/接收、设置、批处理短语，
+  //    以及 PhrasePage 内的添加/修改表单，后开先关）；
+  // 2. 栈空则回退 WebView 历史——笔记编辑器/管理模式各自压过历史记录，
+  //    由 main.js 的 popstate 消费并关闭（沿用原有机制，行为不变）；
+  // 3. 没有历史可退 → 退出应用，与系统默认行为一致。
+  try {
+    const backListener = await onBackButtonPress(async ({ canGoBack }) => {
+      if (consumeBackPress()) return
+      if (canGoBack) {
+        window.history.back()
+      } else {
+        try {
+          await exit(0)
+        } catch (e) {
+          console.warn('退出应用失败', e)
+        }
+      }
+    })
+    backButtonUnlisten = () => {
+      void backListener.unregister()
+    }
+  } catch (e) {
+    console.warn('注册安卓返回键监听失败', e)
+  }
+
+  // 可关闭界面入栈（后开先关）。短语添加/修改面板在 PhrasePage 内自行绑定。
+  bindBackClosable(send_file_show, () => {
+    void closeSendPanel()
+  })
+  bindBackClosable(receive_file_show, () => {
+    void closeReceivePanel()
+  })
+  bindBackClosable(settings_show, closeSettings)
+  bindBackClosable(batch_phrase_show, closeBatchPhrase)
 
   // 点击菜单栏外部时收起原生菜单
   document.addEventListener('click', onDocClick)
@@ -1135,11 +1177,13 @@ onMounted(async () => {
 onUnmounted(() => {
   // 1. 全部取消Tauri事件监听，清理事件订阅
   unlisteners.forEach(fn => fn())
-  // 2. 兜底：强制关闭接收文件的轮询定时器，防止后台死循环
+  // 2. 注销安卓返回键监听，恢复系统默认行为
+  if (backButtonUnlisten) backButtonUnlisten()
+  // 3. 兜底：强制关闭接收文件的轮询定时器，防止后台死循环
   if (receiveTimer !== null) clearInterval(receiveTimer)
-  // 3. 拖放高亮心跳定时器
+  // 4. 拖放高亮心跳定时器
   if (batch_drag_timer !== null) clearInterval(batch_drag_timer)
-  // 4. 移除菜单外部点击监听
+  // 5. 移除菜单外部点击监听
   document.removeEventListener('click', onDocClick)
 })
 

@@ -90,15 +90,31 @@
                 </template>
                 <div class="demo-collapse" ref="formScroll">
                   <el-collapse v-model="activeNames" @change="handleChange" expand-icon-position="left">
-                    <div v-for="(item, index) in form.list" :key="index" class="phrase-content-box">
-                      <button type="button" class="phrase-del-btn" @click="removeItem(index)">
+                  <transition-group name="flip" tag="div" class="phrase-list">
+                  <div v-for="(item, index) in form.list" :key="item.uid" :data-uid="item.uid" class="phrase-content-box" :class="{ 'no-anim': noAnimUids.includes(item.uid), 'dragging': draggingUid === item.uid }" @pointerdown="onDragStart(index, $event)">
+                    <div class="phrase-actions">
+                      <button type="button" class="phrase-drag-btn" title="拖动排序">
+                        <svg viewBox="0 0 1024 1024" aria-hidden="true"><circle cx="320" cy="288" r="56"/><circle cx="704" cy="288" r="56"/><circle cx="320" cy="512" r="56"/><circle cx="704" cy="512" r="56"/><circle cx="320" cy="736" r="56"/><circle cx="704" cy="736" r="56"/></svg>
+                      </button>
+                      <button type="button" class="phrase-act-btn" title="上移" :disabled="index === 0" @click="moveUp(index)">
+                        <svg viewBox="0 0 1024 1024" aria-hidden="true"><path d="M512 160 160 544h192v320h320V544h192z"/></svg>
+                      </button>
+                      <button type="button" class="phrase-act-btn" title="下移" :disabled="index === form.list.length - 1" @click="moveDown(index)">
+                        <svg viewBox="0 0 1024 1024" aria-hidden="true"><path d="M512 864 160 480h192V160h320v320h192z"/></svg>
+                      </button>
+                      <button type="button" class="phrase-act-btn phrase-insert" title="向上插入" @click="insertAbove(index)">
+                        <svg viewBox="0 0 1024 1024" aria-hidden="true"><path d="M512 352 256 608h160v288h192V608h160z"/><rect x="160" y="160" width="704" height="64" rx="24"/></svg>
+                      </button>
+                      <button type="button" class="phrase-del-btn" title="删除" @click="removeItem(index)">
                         <el-icon><Delete /></el-icon>
                       </button>
-                      <el-collapse-item :title="'#' + (index + 1)" :name="String(index + 1)">
-                        <el-input type="textarea" :autosize="{ minRows: 1, maxRows: 2 }" v-model="item.phrase" placeholder="请输入短语" />
-                        <el-input type="textarea" :autosize="{ minRows: 1, maxRows: 2 }" v-model="item.translate" placeholder="请输入译文" />
-                      </el-collapse-item>
                     </div>
+                    <el-collapse-item :title="'#' + (index + 1)" :name="String(item.uid)">
+                      <el-input type="textarea" :autosize="{ minRows: 1, maxRows: 2 }" v-model="item.phrase" placeholder="请输入短语" />
+                      <el-input type="textarea" :autosize="{ minRows: 1, maxRows: 2 }" v-model="item.translate" placeholder="请输入译文" />
+                    </el-collapse-item>
+                  </div>
+                  </transition-group>
                   </el-collapse>
                 </div>
               </el-card>
@@ -142,6 +158,13 @@ const {
   removeItem,
   allDelete,
   onSubmit,
+  // 短语条目排序
+  moveUp,
+  moveDown,
+  insertAbove,
+  onDragStart,
+  noAnimUids,
+  draggingUid,
   formMode,
   keywordInput,
   clear_keyword_content,

@@ -335,8 +335,7 @@
     width: 100%;
     /* 矮窗口兜底：面板高度被压缩到不足容纳全部内容时，form 整体可滚动，
        保证上半部分（类型/关键词）始终能滚动查看，不会被 overflow:hidden 硬裁掉 */
-    overflow-y: auto;
-    overflow-x: hidden;
+    overflow: hidden;
 }
 /* label 置顶后间距由 flex gap 统一控制，清掉 EP 默认的 18px */
 .panel>form .el-form-item { margin-bottom: 0; }
@@ -440,6 +439,9 @@
     overflow-x: hidden;
 }
 .panel>form .el-card__body .demo-collapse {
+    /* position:relative → 列表内条目的 offsetTop 以本容器为基准，
+       滚动定位可用布局坐标精确计算（不受 FLIP 位移动画影响） */
+    position: relative;
     height: 100%;
     overflow-y: auto;
 }
@@ -447,6 +449,10 @@
 .panel>form .el-card__body .demo-collapse>.el-collapse {
     height: 100%;
     border: 0;
+}
+/* 折叠内容区底部间距：EP 默认 25px 过大，这里收紧到 5px */
+.panel>form .el-card__body .el-collapse-item__content {
+    padding-bottom: 5px;
 }
 .panel>form .el-card__body .demo-collapse .el-textarea__inner {
     resize: none;
@@ -503,24 +509,59 @@
 .panel>form .el-card__header .card-add-btn:active { transform: translateY(-50%) scale(0.94); }
 .panel>form .el-card__header .card-add-btn .el-icon { font-size: 20px; }
 
-/* 每条短语右上角“删除”：原裸 el-icon → 40px 圆形触控按钮 */
-.panel>form .el-card__body .phrase-content-box { position: relative; }
-.panel>form .el-card__body .phrase-content-box .phrase-del-btn {
+/* 每条短语右上角操作簇：拖拽手柄 + 上移 + 下移 + 向上插入 + 删除 */
+.panel>form .el-card__body .phrase-content-box { position: relative; touch-action: manipulation; padding: var(--pn-space-1); }
+.panel>form .el-card__body .phrase-content-box .phrase-actions {
     position: absolute;
-    top: var(--pn-space-1);
+    /* 相对折叠标题行垂直居中。
+       原来 top: var(--pn-space-1)=4px 是贴顶，30px 的按钮在 48px 标题行里明显偏上。
+       标题行中线 = 盒子 padding-top + 标题行高/2；再用 translateY(-50%) 把按钮簇
+       自身中心对齐到该中线。展开后按钮仍留在标题行，不会下移压住 textarea。 */
+    top: calc(var(--pn-space-1) + var(--el-collapse-header-height, 48px) / 2);
+    transform: translateY(-50%);
     right: var(--pn-space-1);
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    z-index: 2;
+}
+/* 操作簇内各按钮统一基础样式（拖拽手柄 / 上移 / 下移 / 插入 / 删除） */
+.panel>form .el-card__body .phrase-content-box .phrase-drag-btn,
+.panel>form .el-card__body .phrase-content-box .phrase-act-btn,
+.panel>form .el-card__body .phrase-content-box .phrase-del-btn {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: var(--pn-control-h);
-    height: var(--pn-control-h);
+    height: 30px;
+    padding: 0;
+    border: none;
+    border-radius: var(--pn-radius-full);
+    background: transparent;
     color: var(--pn-text-muted);
     cursor: pointer;
-    z-index: 1;
-    border-radius: var(--pn-radius-full);
     transition: color var(--pn-duration-fast) var(--pn-ease-standard),
                 background-color var(--pn-duration-fast) var(--pn-ease-standard),
                 transform var(--pn-duration-fast) var(--pn-ease-bounce);
+}
+.panel>form .el-card__body .phrase-content-box .phrase-drag-btn { width: 30px; touch-action: none; cursor: grab; }
+.panel>form .el-card__body .phrase-content-box .phrase-act-btn { width: 30px; }
+.panel>form .el-card__body .phrase-content-box .phrase-drag-btn svg,
+.panel>form .el-card__body .phrase-content-box .phrase-act-btn svg {
+    width: 16px; height: 16px; fill: currentColor;
+}
+.panel>form .el-card__body .phrase-content-box .phrase-act-btn:disabled {
+    opacity: 0.3; cursor: not-allowed;
+}
+.panel>form .el-card__body .phrase-content-box .phrase-drag-btn:hover,
+.panel>form .el-card__body .phrase-content-box .phrase-act-btn:hover:not(:disabled) {
+    color: var(--pn-primary-deep);
+    background-color: var(--pn-primary-soft);
+}
+.panel>form .el-card__body .phrase-content-box .phrase-drag-btn:active,
+.panel>form .el-card__body .phrase-content-box .phrase-act-btn:active:not(:disabled) { transform: scale(0.92); }
+/* 删除按钮：危险色，略宽 */
+.panel>form .el-card__body .phrase-content-box .phrase-del-btn {
+    width: 34px;
 }
 .panel>form .el-card__body .phrase-content-box .phrase-del-btn:hover {
     color: var(--pn-danger);
@@ -529,8 +570,85 @@
 }
 .panel>form .el-card__body .phrase-content-box .phrase-del-btn:active { transform: scale(0.92); }
 .panel>form .el-card__body .phrase-content-box .phrase-del-btn .el-icon { font-size: 18px; }
-/* collapse 标题行右侧给 40px 删除按钮留位（标题行高 48px，按钮 4px 贴边恰好放下） */
-.panel>form .el-card__body .el-collapse-item__header { padding-right: 56px; }
+/* 拖拽中：原条目留在列表里作"落位预览"——
+   ① 内容（短语/译文）以半透明显示 → 目标位置能直接看到"哪条内容会落到这里"（具体内容映射）；
+   ② 外层虚线框 + 淡蓝底色标出落点边界。
+   真正跟手的是那个克隆体（外观与正常条目完全一致，不透明）。
+   ⚠ 用 opacity 淡化内层而不是 visibility:hidden 父级 —— 父级隐藏会让虚线框也看不见。 */
+.panel>form .el-card__body .phrase-content-box.dragging .el-collapse-item__wrap {
+    background-color: var(--pn-primary-soft);
+}
+.panel>form .el-card__body .phrase-content-box.dragging .phrase-actions {
+    opacity: 0.3;
+}
+.panel>form .el-card__body .phrase-content-box.dragging .el-collapse-item {
+    opacity: 0.55;
+}
+.panel>form .el-card__body .phrase-content-box.dragging::before {
+    content: "";
+    position: absolute;
+    /* 虚线贴着盒子最外缘（inset:0，边距最小），画在盒子内侧不会被祖先 overflow 裁掉 */
+    inset: 0;
+    pointer-events: none;
+    border: 2px dashed var(--pn-primary);
+    border-radius: var(--pn-radius-md);
+}
+/* 新插入的空条目：瞬间展开（关掉折叠 max-height 动画），避免插入瞬间高度还在变化导致居中定位有偏差。
+   ElCollapseTransition 用内联 max-height 做动画，故需 max-height:none !important 真正禁掉过渡；
+   仅作用于 .no-anim 条目自身，动画时长后撤掉 no-anim，恢复正常收起/展开动画。 */
+.panel>form .el-card__body .phrase-content-box.no-anim .el-collapse-item__wrap {
+    transition: none !important;
+    max-height: none !important;
+}
+/* 跟随手指的克隆体：固定定位（相对视口）+ transform 实时跟随。
+   ⚠ 选择器必须比 .phrase-content-box 的作用域规则
+   （.panel>form .el-card__body .phrase-content-box，position:relative）更具体，
+   否则 position:relative 覆盖掉 position:fixed → 克隆体不跟随鼠标（这是之前不跟手的根因）。
+   克隆体挂在 .el-card__body 内，所有作用域样式都能命中，外观与原条目完全一致；
+   不加阴影/背景等额外装饰 → 拖动中样式保持不变。 */
+.panel>form .el-card__body .phrase-content-box.dragging-clone {
+    position: fixed;
+    left: 0;
+    top: 0;
+    margin: 0;
+    box-sizing: border-box;
+    z-index: 2000;
+    pointer-events: none;
+    will-change: transform;
+}
+/* transition-group 的 FLIP 动画：拖拽中其它条目重排时平滑滑动到新位置（位置变换有动画）。
+   ⚠ 不要给 .dragging（被拖条目）加 transition:none —— Vue 的 TransitionGroup 会克隆
+      第一个子元素来检测"是否存在 transform 过渡"，若克隆体上 transition 被改成 none，
+      整个列表的 FLIP 动画会全部失效（其它条目会瞬移而不是平滑滑动）。 */
+/* 自动滚动期间（<html> 加 .pn-no-flip）：抑制 FLIP 位移动画。
+   原因：FLIP 用 getBoundingClientRect() 测量位置，而该测量包含元素当前未归零的
+   transform。滚动中每帧都在重排 → 上一帧的动画还没结束就重新测量 → 基线被污染
+   → 动画朝错误起点滑 → 反复重启，视觉上就是"晃/晕"。
+   滚动本身已是连续运动，此时让条目直接就位（snap）反而更稳。
+   开关挂在 <html> 上：Vue 不会 patch <html> 的 class，不会被渲染流程覆盖。 */
+.panel>form .el-card__body .phrase-list .flip-move {
+    transition: transform 0.28s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+/* 拖拽期间（<html> 加 .pn-dragging）：关闭列表的 CSS 滚动锚定。
+   原因：浏览器"滚动锚定"会在列表内容增删/重排时自动调整 scrollTop 以保持
+   锚定元素的位置不动。而拖拽恰恰要自己精确控制 scrollTop →
+   两者互相打架：锚定把手动滚动"吃掉"一部分（实测矮窗口下 90 帧只走 184px
+   而非 360px），表现为滚动忽快忽慢、还会突然跳一下。
+   拖拽时落点由 insertIndexFor 精确计算，不需要浏览器锚定来兜底。 */
+html.pn-dragging .panel>form .el-card__body .demo-collapse {
+    overflow-anchor: none;
+}
+html.pn-no-flip .panel>form .el-card__body .phrase-list .flip-move {
+    transition: none;
+}
+/* collapse 标题行右侧给操作簇（约 5 个按钮）留位。
+   touch-action:none：触摸手势完全交给 JS（见 PhrasePage.js 的意图窗口）。
+   ⚠ 必须在基态声明：touch-action 在 pointerdown 时就被浏览器锁定，
+     手势开始后再动态改是无效的；标题之外的内容区仍保持 manipulation，可原生滚动。 */
+.panel>form .el-card__body .el-collapse-item__header {
+    padding-right: 172px;
+    touch-action: none;
+}
 
 /* 关键词输入框：右侧预留清空按钮位置（清空钮 32→36px） */
 .panel>form .keyword-input .el-input__wrapper {

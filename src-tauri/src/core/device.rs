@@ -228,6 +228,35 @@ pub async fn stop_scan(scan_state: State<'_, ScanState>) -> Result<(), String> {
     Ok(())
 }
 
+/// 选择 mDNS 广播要注册的 IPv4 地址。
+///
+/// 背景：`local_ip()` 只从"持有默认路由的网卡"取 IP。电脑开着移动热点给手机连时，
+/// 默认路由仍在路由器网卡上，取到的会是路由器网段 IP（如 192.168.1.x）——手机在
+/// 热点网段（192.168.137.x）根本够不着；更糟的是 mdns-sd 应答查询时只回答与
+/// "查询到达网卡"同网段的地址（`valid_ip_on_intf`），网段不符会静默不应答，
+/// 导致手机侧"未发现设备"（电脑能发现手机、手机发现不了电脑，就是这条）。
+///
+/// 策略：枚举全部网卡，优先选 Windows 移动热点网段 192.168.137.0/24；
+/// 没有热点网卡时退回 local_ip()（常规同网段场景，行为不变）。
+fn pick_advertise_ipv4() -> String {
+    if let Ok(ifas) = local_ip_address::list_afinet_netifas() {
+        let hotspot_ip = ifas.iter().find_map(|(_, ip)| match ip {
+            std::net::IpAddr::V4(a)
+                if a.octets()[0] == 192 && a.octets()[1] == 168 && a.octets()[2] == 137 =>
+            {
+                Some(*a)
+            }
+            _ => None,
+        });
+        if let Some(ip) = hotspot_ip {
+            return ip.to_string();
+        }
+    }
+    local_ip_address::local_ip()
+        .map(|ip| ip.to_string())
+        .unwrap_or_default()
+}
+
 #[tauri::command]
 pub async fn start_broadcast(
     state: State<'_, MdnsState>,
@@ -238,9 +267,7 @@ pub async fn start_broadcast(
     }
 
     // 显式取本机局域网 IP，Android 上 enable_addr_auto 不可靠
-    let local_ip = local_ip_address::local_ip()
-        .map(|ip| ip.to_string())
-        .unwrap_or_default();
+    let local_ip = pick_advertise_ipv4();
     println!("[mDNS] local_ip = {}", local_ip);
 
     let mdns = mdns_sd::ServiceDaemon::new().map_err(|e| e.to_string())?;
