@@ -54,12 +54,13 @@ pub fn get_db_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 }
 
 /// 可见短语集合（列表 / 搜索 / 居中窗口共用）。
-/// state=1 表示 base 被 user 覆盖 / 被用户删除（屏蔽态）—— 直接跳过，不参与查询：
-/// 各探测 / 合并 / 路由 SQL 里统一用 `(source='user' OR (source='base' AND state=0))` 过滤。
-/// ⚠【终态铁律】state=1 一旦写入就是终态，之后任何路径都不再改动这一行：
-///    不刷内容、不重置 state、不删除、不作为 INSERT ... SELECT 的数据来源；
-///    基础库升级迁移（core/init.rs::run_migration）与清理多余 base 也必须跳过它。
-///    所有 `SET state=1` 的 UPDATE 都带 `AND state=0`，只对「没变过」的行生效。
+/// state=1 表示 base 被 user 覆盖 / 被用户删除（屏蔽态）—— 不参与显示与判重：
+/// 列表/搜索/窗口查询、导入判重、手动保存/删除/迁移的探测统一用
+/// `(source='user' OR (source='base' AND state=0))` 过滤。
+/// ⚠【终态铁律】只作用于「启动迁移 / 删除 / 手动保存」三条路径：这三条不再改动
+///    屏蔽行（不刷内容、不重置回 0、不删除、不复活）。
+///    导入 / 接收 / 批处理的重复关键词处理按 `a23ffea` 口径，屏蔽行可作为
+///    合并或元数据来源（详见《软件具体流程.md》1.2 例外小节）。
 /// ⚠ 不再做 NOT EXISTS 相关子查询：state 本身就是屏蔽标记，被覆盖的 base 在
 ///    save_phrase / apply_append / delete_phrase / 导入时已同步标 state=1，
 ///    逐行再去 user 表查一遍是冗余的 O(N²)。历史库若漏标，由
@@ -307,7 +308,55 @@ pub fn delete_phrase(app: tauri::AppHandle, keyword: String) -> Result<(), Strin
     }
 }
 
-// 导入冲突时：用新列表覆盖已有短语
+// 导入冲突「覆盖」：list 只放导入内容，不含 base 原有短语。
+//   · 已有 user 行 → 整段替换 list（type/first_char 保留库内值）
+//   · 无 user 行（只有 base）→ 从同名 base 行只读复制 type/first_char 建 user 行
+// 两种情况都先幂等屏蔽同名「可见」base：防止历史漏标时 base + user 双行同时显示。
+// 屏蔽态 base(state=1) 不参与判重，也不会被这条 UPDATE 改动。
+fn apply_overwrite(conn: &Connection, keyword: &str, new_list: &str) -> Result<(), String> {
+    conn.execute(
+        "UPDATE phrase_table SET state=1 WHERE source='base' AND keyword=?1 AND state=0",
+        params![keyword],
+    )
+    .map_err(|e| e.to_string())?;
+
+    let updated = conn
+        .execute(
+            "UPDATE phrase_table SET list = ?1 WHERE source='user' AND keyword = ?2",
+            params![new_list, keyword],
+        )
+        .map_err(|e| e.to_string())?;
+    if updated > 0 {
+        return Ok(());
+    }
+
+    // 无 user 行：从同名 base 复制 type/first_char（只读，不改动那一行），
+    // list 直接放导入内容 —— 这正是「覆盖」与「追加」的差别。
+    let inserted = conn
+        .execute(
+            "INSERT INTO phrase_table (type, first_char, keyword, list, source, state) \
+             SELECT type, first_char, ?1, ?2, 'user', 0 FROM phrase_table WHERE keyword=?1 AND source='base' LIMIT 1",
+            params![keyword, new_list],
+        )
+        .map_err(|e| e.to_string())?;
+    if inserted == 0 {
+        // 连 base 都没有（裁决期间数据被删）：兜底建行，避免 0 行插入静默丢数据
+        let first_char = keyword
+            .chars()
+            .next()
+            .map(|c| c.to_lowercase().collect::<String>())
+            .unwrap_or_default();
+        conn.execute(
+            "INSERT INTO phrase_table (type, first_char, keyword, list, source, state) \
+             VALUES ('A~Z', ?1, ?2, ?3, 'user', 0)",
+            params![first_char, keyword, new_list],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+// 导入冲突时：用新列表覆盖已有短语（单条版，与批量裁决共用 apply_overwrite）
 // async + spawn_blocking：SQLite IO 挪到阻塞线程池，不卡主线程（同步命令会冻住 UI，点击后转圈刷不出来）
 #[tauri::command(rename_all = "snake_case")]
 pub async fn resolve_duplicate_overwrite(
@@ -318,27 +367,7 @@ pub async fn resolve_duplicate_overwrite(
     tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
         let db_path = get_db_path(&app)?;
         let conn = Connection::open(&db_path).map_err(|e| e.to_string())?;
-        // base 只读：覆盖落到 user 行；无 user 行则建 user 覆盖行并隐藏 base
-        let updated = conn
-            .execute(
-                "UPDATE phrase_table SET list = ?1 WHERE source='user' AND keyword = ?2",
-                params![new_list, keyword],
-            )
-            .map_err(|e| e.to_string())?;
-        if updated == 0 {
-            conn.execute(
-                "INSERT INTO phrase_table (type, first_char, keyword, list, source, state) \
-                 SELECT type, first_char, ?1, ?2, 'user', 0 FROM phrase_table WHERE keyword=?1 AND source='base' LIMIT 1",
-                params![keyword, new_list],
-            )
-            .map_err(|e| e.to_string())?;
-            conn.execute(
-                "UPDATE phrase_table SET state=1 WHERE source='base' AND keyword=?1 AND state=0",
-                params![keyword],
-            )
-            .map_err(|e| e.to_string())?;
-        }
-        Ok(())
+        apply_overwrite(&conn, &keyword, &new_list)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -406,11 +435,27 @@ fn apply_append(conn: &Connection, keyword: &str, list: &str) -> Result<(), Stri
         )
         .map_err(|e| e.to_string())?;
     } else {
-        conn.execute(
-            "UPDATE phrase_table SET list = ?1 WHERE keyword = ?2 AND source='user'",
-            params![merged, keyword],
-        )
-        .map_err(|e| e.to_string())?;
+        let updated = conn
+            .execute(
+                "UPDATE phrase_table SET list = ?1 WHERE keyword = ?2 AND source='user'",
+                params![&merged, keyword],
+            )
+            .map_err(|e| e.to_string())?;
+        if updated == 0 {
+            // 兜底：探测没命中、库里也没有 user 行（如裁决期间 base 被屏蔽），
+            // 不能让导入内容静默丢失 —— 直接建一条 user 行。
+            let first_char = keyword
+                .chars()
+                .next()
+                .map(|c| c.to_lowercase().collect::<String>())
+                .unwrap_or_default();
+            conn.execute(
+                "INSERT INTO phrase_table (type, first_char, keyword, list, source, state) \
+                 VALUES ('A~Z', ?1, ?2, ?3, 'user', 0)",
+                params![first_char, keyword, &merged],
+            )
+            .map_err(|e| e.to_string())?;
+        }
     }
     Ok(())
 }
@@ -441,26 +486,8 @@ pub async fn resolve_duplicates_batch(
             // 内层闭包捕获单条错误，保证一条失败只记 errors、不中断整批（仍统一 COMMIT）
             let r = (|| -> Result<(), String> {
                 if action == "overwrite" {
-                    // base 只读：覆盖落到 user 行；无 user 行则建 user 覆盖行并隐藏 base
-                    let updated = conn
-                        .execute(
-                            "UPDATE phrase_table SET list = ?1 WHERE source='user' AND keyword = ?2",
-                            params![item.new_list, item.keyword],
-                        )
-                        .map_err(|e| e.to_string())?;
-                    if updated == 0 {
-                        conn.execute(
-                            "INSERT INTO phrase_table (type, first_char, keyword, list, source, state) \
-                             SELECT type, first_char, ?1, ?2, 'user', 0 FROM phrase_table WHERE keyword=?1 AND source='base' LIMIT 1",
-                            params![item.keyword, item.new_list],
-                        )
-                        .map_err(|e| e.to_string())?;
-                        conn.execute(
-                            "UPDATE phrase_table SET state=1 WHERE source='base' AND keyword=?1 AND state=0",
-                            params![item.keyword],
-                        )
-                        .map_err(|e| e.to_string())?;
-                    }
+                    // 与单条命令共用同一套覆盖语义（幂等屏蔽可见 base → 替换/新建 user 行）
+                    apply_overwrite(&conn, &item.keyword, &item.new_list)?;
                 } else {
                     apply_append(&conn, &item.keyword, &item.new_list)?;
                 }
@@ -729,8 +756,7 @@ pub async fn batch_entry_phrases(
             // 查库内现状：优先 user 行（'user' > 'base'，DESC 取前）；无则 base 行
             let existing: Option<(String, bool)> = conn
                 .query_row(
-                    // 跳过被屏蔽的 base：否则会把用户已删除/已覆盖的旧 list 又合并回来
-            "SELECT list, (source='base') FROM phrase_table WHERE keyword=?1 AND (source='user' OR (source='base' AND state=0)) ORDER BY source DESC LIMIT 1",
+                    "SELECT list, (source='base') FROM phrase_table WHERE keyword=?1 ORDER BY source DESC LIMIT 1",
                     params![keyword],
                     |r| Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?)),
                 )
@@ -799,7 +825,7 @@ pub async fn batch_entry_phrases(
                         )
                         .map_err(|e| e.to_string())?;
                         conn.execute(
-                            "UPDATE phrase_table SET state=1 WHERE source='base' AND keyword=?1 AND state=0",
+                            "UPDATE phrase_table SET state=1 WHERE source='base' AND keyword=?1",
                             params![entry.keyword],
                         )
                         .map_err(|e| e.to_string())?;

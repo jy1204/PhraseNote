@@ -31,3 +31,8 @@
 
 ## 导入脚本列名坑
 - db 列名原为 `keyboard`，2026-10-26 已全局改名 `keyword`；历史脚本若还写 keyboard 会报 no such column。
+
+## 导入完成提示口径（用户 2026-11-07 拍板，勿再收窄）
+- `App.vue` 的 `importSuccessCount` = 第一阶段 `res.imported`（短语静默插入词条 + 笔记目录/笔记）+ 冲突弹窗里「追加/覆盖」裁决成功的条数（`resolve_duplicates_batch` 返回的 `resolved`，逐条队列与勾选批量两条路径都要累加）。
+- **不单独显示「重复关键词条数」**，但被追加/覆盖的词确实落库必须计入；跳过、失败、取消不计入。
+- 反例：`phrase_backup_20261105.zip`（121 短语 + 1 笔记目录）整包全撞词时，只算 `res.imported` 会显示「共导入 1 条」，正确应为 122 条。

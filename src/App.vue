@@ -585,6 +585,8 @@ async function runDupWorker() {
         items: [{ keyword: item.keyword, new_list: item.new_list }],
       })
       const errs = (res?.errors?.length) || 0
+      // 追加 / 覆盖成功写入的这一条也算「导入完成」，按 resolved 累加进总数
+      importSuccessCount.value += Number(res?.resolved) || 0
       if (errs > 0) console.error('批量处理部分失败', res.errors)
       dupErrCount.value += errs
     } catch (e) {
@@ -678,6 +680,11 @@ function selectScheme(s: string) {
   )
 }
 const importing = ref(false)
+
+// 本次导入真正成功落库的总条数 = 第一阶段 res.imported（短语词条 + 笔记目录/笔记）
+// + 冲突弹窗里「追加 / 覆盖」裁决成功的条数（resolve_duplicates_batch 的 res.resolved）。
+// 跳过与裁决失败不计入；完成提示统一显示这个总数，不单独显示「重复关键词条数」。
+const importSuccessCount = ref(0)
 
 // 全局初始化遮罩：App 首次渲染即为 true（盖住启动到初始化完成之间的空窗），
 // 由 onMounted 调 ensure_init 完成后置 false 隐藏。
@@ -864,10 +871,12 @@ async function doImport(fileIds?: string[]) {
   loading_show.value = true
   loading_text.value = '正在导入数据...'
   importing.value = true
+  importSuccessCount.value = 0
   try {
     const res: any = await invoke('import_received_files', {
       fileIds: ids,
     })
+    importSuccessCount.value = Number(res.imported) || 0
     const duplicates = res.duplicates || []
     if (duplicates.length > 0) {
       dupList.value = duplicates
@@ -875,7 +884,7 @@ async function doImport(fileIds?: string[]) {
       dupRemember.value = false
       dupDialogShow.value = true
     } else {
-      ElMessage({ message: `导入完成，新增 ${res.imported} 条`, type: 'success', offset: 50, duration: 3000 })
+      ElMessage({ message: `导入完成，共导入 ${importSuccessCount.value} 条`, type: 'success', offset: 50, duration: 3000 })
       await afterImportSuccess(ids)
     }
   } catch (err) {
@@ -938,6 +947,8 @@ async function resolveCurrent(action: 'overwrite' | 'skip' | 'append') {
         items: items.map((d: any) => ({ keyword: d.keyword, new_list: d.new_list })),
       })
       errCount = (res.errors && res.errors.length) || 0
+      // 批量追加 / 覆盖成功的条数一并计入「导入完成」总数
+      importSuccessCount.value += Number(res.resolved) || 0
       if (errCount > 0) console.error('批量处理部分失败', res.errors)
     } catch (e) {
       errCount = items.length               // 整体失败：全部计为失败
@@ -974,14 +985,23 @@ async function cancelImport() {
 }
 
 async function finishImport(errCount = 0) {
+  // 完成提示统一显示本次真正落库的总条数：第一阶段静默写入（短语 + 笔记）
+  // + 弹窗里追加/覆盖裁决成功的条数；跳过、失败、取消都不计入
+  const total = importSuccessCount.value
   dupDialogShow.value = false
   dupRemember.value = false
   dupList.value = []                       // 清冲突列表残留
   dupIndex.value = 0
   if (errCount > 0) {
-    ElMessage({ message: `导入完成，${errCount} 条处理失败`, type: 'warning', offset: 50, duration: 3000 })
+    ElMessage({
+      message: `导入完成，共导入 ${total} 条，${errCount} 条处理失败`,
+      type: 'warning', offset: 50, duration: 3000
+    })
   } else {
-    ElMessage({ message: '导入完成', type: 'success', offset: 50, duration: 3000 })
+    ElMessage({
+      message: `导入完成，共导入 ${total} 条`,
+      type: 'success', offset: 50, duration: 3000
+    })
   }
   await afterImportSuccess(currentImportIds.value)
 }
@@ -1057,7 +1077,9 @@ async function openImportDialog() {
     loading_show.value = true
     loading_text.value = '正在导入...'
     importing.value = true
+    importSuccessCount.value = 0
     const res: any = await invoke('import_subject_zip', { zipPath })
+    importSuccessCount.value = Number(res.imported) || 0
     // 重复的关键词列表
     const duplicates = res.duplicates || []
     if (duplicates.length > 0) {
@@ -1067,7 +1089,7 @@ async function openImportDialog() {
       dupDialogShow.value = true
     } else {
       ElMessage({
-        message: `导入完成，新增 ${res.imported} 条，跳过 ${res.skipped} 个文件`,
+        message: `导入完成，共导入 ${importSuccessCount.value} 条，跳过 ${res.skipped} 个文件`,
         type: 'success',
         offset: 50,
         duration: 3000

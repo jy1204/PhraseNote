@@ -5,7 +5,7 @@
 use rusqlite::{params, Connection};
 use serde::Serialize;
 use serde_json;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -31,6 +31,17 @@ struct DuplicateInfo {
     new_list: String,
     old_list: String,
     source_file: String,
+}
+
+/// 同批合并后的一条短语（只含 source='user' 的行）。
+/// 以前合并结果要先写成临时 db、再读回字节交给写入函数重新打开扫描；
+/// 现在整批留在内存里直接流转，省掉两次落盘 + 两次建表/全表扫描。
+#[derive(Debug, Clone)]
+struct PhraseRow {
+    r#type: String,
+    first_char: String,
+    keyword: String,
+    list: String,
 }
 
 #[tauri::command]
@@ -142,23 +153,18 @@ pub async fn import_subject_zip(
     let mut imported = 0i64;
     let mut skipped = 0i64;
 
+    // 同一批 zip 里可能有多个 phrase db、或跨文件出现同一 keyword：
+    // 先按目标相对路径分组收集，循环结束后统一「同批合并 → 判重写入」，
+    // 保证一个 keyword 只产出一条冲突或一条静默写入。
+    let mut phrase_groups: BTreeMap<String, Vec<Vec<u8>>> = BTreeMap::new();
+
     for (module, name, bytes) in tasks {
         if cancel.load(Ordering::SeqCst) {
             return Err("用户取消了导入".into());
         }
         match module.as_str() {
-            // 短语：复用原合并逻辑（按 keyword 查重，重复项交给前端弹窗处理）
             "phrase" => {
-                import_phrase_bytes(
-                    &bytes,
-                    &subject_dir,
-                    &tmp_root,
-                    &name,
-                    &cancel,
-                    &mut imported,
-                    &mut skipped,
-                    &mut duplicates,
-                )?;
+                phrase_groups.entry(name).or_default().push(bytes);
             }
             // 笔记：不查重，目录重命名为「导入目录-原名称」后整体并入
             "note" => match crate::english::note::import_note_bytes(
@@ -182,6 +188,23 @@ pub async fn import_subject_zip(
         }
     }
 
+    // 统一处理短语分组：同批合并 → 判重 → 冲突收集 / 静默写入
+    for (name, sources) in &phrase_groups {
+        if cancel.load(Ordering::SeqCst) {
+            return Err("用户取消了导入".into());
+        }
+        import_phrase_group(
+            name,
+            sources,
+            &subject_dir,
+            &tmp_root,
+            &cancel,
+            &mut imported,
+            &mut skipped,
+            &mut duplicates,
+        )?;
+    }
+
     // 清理导入时落在缓存里的临时 zip
     #[cfg(target_os = "android")]
     {
@@ -199,12 +222,152 @@ pub async fn import_subject_zip(
     }))
 }
 
-// 短语导入：从内存字节合并进目标 phrase_db（按 keyword 查重，重复项收集到 duplicates 由前端弹窗处理）
-// 目标不存在则整库复制；目标存在则逐条比对插入。保持原 import_subject_zip 的行为不变。
-fn import_phrase_bytes(
-    bytes: &[u8],
+// 一次导入批次里，同一 keyword 可能出现在同一个 db 的多行、或跨多个 db 文件。
+// 先合并成「一个 keyword 一行」的内存行集，再交给 import_phrase_rows 判重写入：
+// 这样同批重复只会产出一条冲突（或一条静默写入），不会「第一行先 INSERT、
+// 第二行命中刚写入的 user 行变成自己跟自己冲突」。
+// 只收 source='user' 的行；list 按 phrase.trim() 去重（区分大小写，与 apply_append 一致）。
+// 性能：合并结果不再写成临时库字节再读回（省掉建表、落盘、二次打开、二次全表扫描）。
+fn merge_phrase_sources(
+    sources: &[Vec<u8>],
+    tmp_root: &Path,
+    cancel: &Arc<AtomicBool>,
+    skipped: &mut i64,
+) -> Result<Vec<PhraseRow>, String> {
+    // keyword -> (type, first_char, 合并后的 items, 已见 phrase)
+    let mut merged: BTreeMap<String, (String, String, Vec<serde_json::Value>, HashSet<String>)> =
+        BTreeMap::new();
+
+    for bytes in sources {
+        if cancel.load(Ordering::SeqCst) {
+            return Err("用户取消了导入".into());
+        }
+        let src_path = tmp_root.join(format!("import_src_{}.db", uuid::Uuid::new_v4()));
+        if fs::write(&src_path, bytes).is_err() {
+            *skipped += 1;
+            continue;
+        }
+        let conn = match Connection::open(&src_path) {
+            Ok(c) => c,
+            Err(e) => {
+                println!("[import] 打开源短语 db 失败: {}", e);
+                *skipped += 1;
+                let _ = fs::remove_file(&src_path);
+                continue;
+            }
+        };
+        // 直接 prepare 全表查询：表不存在 / 旧库列不兼容会以 Err 落到下面的 skipped 分支，
+        // 不再额外做 sqlite_master 探测和 COUNT(*) 全表计数（每个源 db 少两次查询）。
+        let read_rows = (|| -> Result<usize, String> {
+            let mut stmt = conn
+                .prepare("SELECT type, first_char, keyword, list, source FROM phrase_table")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                    ))
+                })
+                .map_err(|e| e.to_string())?;
+            let mut row_count = 0usize;
+            for row in rows {
+                if cancel.load(Ordering::SeqCst) {
+                    return Err("用户取消了导入".into());
+                }
+                let (t, fc, kw, list, src) = row.map_err(|e| e.to_string())?;
+                row_count += 1;
+                // base 种子不当普通数据导入；空 keyword 直接丢弃
+                if src != "user" || kw.is_empty() {
+                    continue;
+                }
+                let items: Vec<serde_json::Value> =
+                    serde_json::from_str(&list).unwrap_or_default();
+                let entry = merged
+                    .entry(kw)
+                    .or_insert_with(|| (t, fc, Vec::new(), HashSet::new()));
+                for item in items {
+                    let phrase = item
+                        .get("phrase")
+                        .and_then(|p| p.as_str())
+                        .unwrap_or("")
+                        .trim()
+                        .to_string();
+                    if phrase.is_empty() || entry.3.contains(&phrase) {
+                        continue;
+                    }
+                    entry.3.insert(phrase);
+                    entry.2.push(item);
+                }
+            }
+            Ok(row_count)
+        })();
+        drop(conn);
+        let _ = fs::remove_file(&src_path);
+        match read_rows {
+            Ok(0) => *skipped += 1,          // 空表 / 无有效行，等价原 count==0 分支
+            Ok(_) => {}
+            // 取消必须向上抛，其余（旧库列不兼容 / 解析失败）只跳过这一份源 db
+            Err(e) if e == "用户取消了导入" => return Err(e),
+            Err(e) => {
+                println!("[import] 读取源短语 db 失败，跳过: {}", e);
+                *skipped += 1;
+            }
+        }
+    }
+
+    // BTreeMap 保证稳定排序；合并结果直接产出内存行，不再写临时库 / 读回字节。
+    let mut rows = Vec::with_capacity(merged.len());
+    for (kw, (t, fc, items, _)) in merged {
+        let list = serde_json::to_string(&items).map_err(|e| e.to_string())?;
+        rows.push(PhraseRow {
+            r#type: t,
+            first_char: fc,
+            keyword: kw,
+            list,
+        });
+    }
+    Ok(rows)
+}
+
+/// 一组指向同一个目标库的 phrase 源：先同批合并，再统一判重写入。
+fn import_phrase_group(
+    name: &str,
+    sources: &[Vec<u8>],
     subject_dir: &Path,
     tmp_root: &Path,
+    cancel: &Arc<AtomicBool>,
+    imported: &mut i64,
+    skipped: &mut i64,
+    duplicates: &mut Vec<DuplicateInfo>,
+) -> Result<(), String> {
+    let rows = merge_phrase_sources(sources, tmp_root, cancel, skipped)?;
+    if rows.is_empty() {
+        return Ok(());
+    }
+    import_phrase_rows(
+        &rows,
+        subject_dir,
+        name,
+        cancel,
+        imported,
+        skipped,
+        duplicates,
+    )
+}
+
+// 短语导入：把合并后的内存行写进目标 phrase_db（按 keyword 判重，重复项收集到 duplicates 交前端弹窗处理）
+// 目标库不存在则建表后整批写入；存在则先一次性载入可见 keyword，再单事务写入。
+// 性能：① 不再把合并结果落成临时 db 再打开扫描（少 2 次落盘 + 2 次全表扫描）；
+//       ② 判重由「每个 keyword 一次 SELECT」改为「一次扫描目标库可见行 → HashMap」；
+//       ③ INSERT 复用同一条 prepared statement，不再每行重新 prepare。
+// 语义不变：判重口径、user 优先 old_list、屏蔽行不算存在、取消后已写入部分仍提交。
+fn import_phrase_rows(
+    rows: &[PhraseRow],
+    subject_dir: &Path,
     name: &str,
     cancel: &Arc<AtomicBool>,
     imported: &mut i64,
@@ -227,49 +390,7 @@ fn import_phrase_bytes(
     if let Some(parent) = target_path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-
-    // 目标不存在：直接复制整库
-    if !target_path.exists() {
-        fs::write(&target_path, bytes).map_err(|e| e.to_string())?;
-        *imported += 1;
-        return Ok(());
-    }
-
-    // 目标存在：合并
-    let tmp_path = tmp_root.join(format!("import_{}.db", uuid::Uuid::new_v4()));
-    fs::write(&tmp_path, bytes).map_err(|e| e.to_string())?;
-
-    let src_conn = match Connection::open(&tmp_path) {
-        Ok(c) => c,
-        Err(e) => {
-            let _ = fs::remove_file(&tmp_path);
-            return Err(format!("打开源 db 失败: {}", e));
-        }
-    };
-
-    let table_exists: bool = src_conn
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='phrase_table')",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap_or(false);
-    if !table_exists {
-        drop(src_conn);
-        let _ = fs::remove_file(&tmp_path);
-        *skipped += 1;
-        return Ok(());
-    }
-
-    let count: i64 = src_conn
-        .query_row("SELECT COUNT(*) FROM phrase_table", [], |r| r.get(0))
-        .unwrap_or(0);
-    if count == 0 {
-        drop(src_conn);
-        let _ = fs::remove_file(&tmp_path);
-        *skipped += 1;
-        return Ok(());
-    }
+    let target_existed = target_path.exists();
 
     let dst_conn = Connection::open(&target_path).map_err(|e| e.to_string())?;
     dst_conn
@@ -291,87 +412,71 @@ fn import_phrase_bytes(
 
     let tx = dst_conn.unchecked_transaction().map_err(|e| e.to_string())?;
 
-    let mut stmt = src_conn
-        .prepare("SELECT type, first_char, keyword, list, source FROM phrase_table")
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, String>(4)?,
-            ))
-        })
+    // 【判重口径】关键词「存在」= 目标库里有 user 行 或 可见 base 行(state=0)。
+    // 分两条 SQL 一次扫出全部可见行的 old_list：先 user 后 base，user 行优先；
+    // or_insert 不覆盖，同 keyword 多条 user 时保留首次（贴近原 LIMIT 1 的扫描顺序）。
+    // state=1 的屏蔽态 base 被 WHERE 排除，等于「不算存在、不读不写」。
+    // 原来每个 keyword 都要 query_row 一次，现在整批只扫两次，且都走 (source,keyword) 索引前缀。
+    let mut existing: HashMap<String, String> = HashMap::new();
+    for sql in [
+        "SELECT keyword, list FROM phrase_table WHERE source='user'",
+        "SELECT keyword, list FROM phrase_table WHERE source='base' AND state=0",
+    ] {
+        let mut stmt = tx.prepare(sql).map_err(|e| e.to_string())?;
+        let found = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|e| e.to_string())?;
+        for row in found {
+            let (kw, list) = row.map_err(|e| e.to_string())?;
+            existing.entry(kw).or_insert(list);
+        }
+    }
+
+    let mut ins = tx
+        .prepare(
+            "INSERT INTO phrase_table (type, first_char, keyword, list, source, state) \
+             VALUES (?1,?2,?3,?4,'user',0)",
+        )
         .map_err(|e| e.to_string())?;
 
     let mut cancelled = false;
-
-    for row in rows {
+    let mut inserted = 0i64;
+    for r in rows {
         if cancel.load(Ordering::SeqCst) {
             cancelled = true;
             break;
         }
-        let (t, fc, kb, list, src) = row.map_err(|e| e.to_string())?;
-
-        // base 种子不当普通数据导入：只接收 source='user' 的行，
-        // 避免把另一台设备的 base（及其 state=1 隐藏标记）当成用户数据插入。
-        if src != "user" {
-            continue;
-        }
-
-        // 查重探针限定 source='user'：只有目标也存在 user 行才算真正冲突；
-        // 目标仅有 base 行（被覆盖或纯 base）属于「干净覆盖」，不弹窗。
-        let existing_user_list: Option<String> = tx
-            .query_row(
-                "SELECT list FROM phrase_table WHERE keyword = ?1 AND source='user'",
-                params![kb],
-                |r| r.get(0),
-            )
-            .ok();
-
-        match existing_user_list {
+        // 合并阶段已只保留 source='user' 的行，这里不需要再过滤 base
+        match existing.get(&r.keyword).cloned() {
             Some(old_list) => {
                 duplicates.push(DuplicateInfo {
-                    keyword: kb,
-                    new_list: list,
+                    keyword: r.keyword.clone(),
+                    new_list: r.list.clone(),
                     old_list,
                     source_file: name.to_string(),
                 });
             }
             None => {
-                // 插入为 user 覆盖行；若目标有对应 base 行则标记其 state=1（与 save_phrase 一致）
-                tx.execute(
-                    "INSERT INTO phrase_table (type, first_char, keyword, list, source, state) VALUES (?1,?2,?3,?4,'user',0)",
-                    params![t, fc, kb, list],
-                )
-                .map_err(|e| e.to_string())?;
-                let base_exists: bool = tx
-                    .query_row(
-                        // 只有未被屏蔽(state=0)的 base 才算「需要隐藏的干净覆盖」；
-                        // 已被用户删除/覆盖的 base 保持 state=1，直接跳过
-                        "SELECT EXISTS(SELECT 1 FROM phrase_table WHERE keyword = ?1 AND source='base' AND state=0)",
-                        params![kb],
-                        |r| r.get(0),
-                    )
-                    .unwrap_or(false);
-                if base_exists {
-                    tx.execute(
-                        "UPDATE phrase_table SET state=1 WHERE source='base' AND keyword=?1 AND state=0",
-                        params![kb],
-                    )
+                // 库里没有任何可见行 → 全新词，静默插入一条 user 行。
+                // 同批已按 keyword 合并过，每个 keyword 只会走到这里一次。
+                ins.execute(params![&r.r#type, &r.first_char, &r.keyword, &r.list])
                     .map_err(|e| e.to_string())?;
-                }
-                *imported += 1;
+                existing.insert(r.keyword.clone(), r.list.clone());
+                inserted += 1;
             }
         }
     }
-
+    drop(ins);
     tx.commit().map_err(|e| e.to_string())?;
-    drop(stmt);
-    drop(src_conn);
-    let _ = fs::remove_file(&tmp_path);
+
+    // 目标库原本不存在时沿用旧口径（整库复制算 1 条）；已存在则按真正插入的词条数计
+    if target_existed {
+        *imported += inserted;
+    } else {
+        *imported += 1;
+    }
 
     if cancelled {
         return Err("用户取消了导入".into());
@@ -395,16 +500,17 @@ pub async fn import_received_files(
     let subject_dir = get_subject_dir(&app)?;
     fs::create_dir_all(&subject_dir).map_err(|e| e.to_string())?;
 
-    // 与 import_subject_zip 完全一致：短语走 import_phrase_bytes，笔记走 import_note_bytes
+    // 与 import_subject_zip 完全一致：短语走 import_phrase_rows，笔记走 import_note_bytes
     let cancel = import_state.cancel.clone();
     cancel.store(false, Ordering::SeqCst);
 
-    // 临时目录（安卓上 /tmp 不可写，统一用应用缓存目录），供 import_phrase_bytes 落地临时 db
+    // 临时目录（安卓上 /tmp 不可写，统一用应用缓存目录），供 merge_phrase_sources 落地源 db 临时文件；
+    // 合并结果不再落盘，直接以内存行交给 import_phrase_rows
     let tmp_root = app.path().app_cache_dir().map_err(|e| e.to_string())?;
     fs::create_dir_all(&tmp_root).map_err(|e| e.to_string())?;
 
     // 短语库统一并入主 phrase_db，按其在 subject 下的标准相对路径推导
-    // （供 import_phrase_bytes 的 zip-slip 校验与 duplicates.source_file 展示）
+    // （供 import_phrase_rows 的 zip-slip 校验与 duplicates.source_file 展示）
     let phrase_path = crate::english::phrase::get_db_path(&app)?;
     let phrase_name = phrase_path
         .strip_prefix(&subject_dir)
@@ -414,6 +520,10 @@ pub async fn import_received_files(
     let mut duplicates: Vec<DuplicateInfo> = Vec::new();
     let mut imported = 0i64;
     let mut skipped = 0i64;
+
+    // 接收侧所有 phrase 文件都并入同一个主短语库：先收集，循环结束后统一
+    // 「同批合并 → 判重」，避免跨文件同 keyword 自己跟自己冲突。
+    let mut phrase_sources: Vec<Vec<u8>> = Vec::new();
 
     for file in &targets {
         if cancel.load(Ordering::SeqCst) {
@@ -440,31 +550,35 @@ pub async fn import_received_files(
                     skipped += 1;
                 }
             }
-            // 短语：与 zip 导入共用 import_phrase_bytes（整库复制 / 按 keyword 查重 / 收集 duplicates）
+            // 短语：收集待合并字节，与 zip 导入共用同一套同批合并 / 判重 / 冲突裁决
             "phrase" => {
-                if let Err(e) = import_phrase_bytes(
-                    &bytes,
-                    &subject_dir,
-                    &tmp_root,
-                    &phrase_name,
-                    &cancel,
-                    &mut imported,
-                    &mut skipped,
-                    &mut duplicates,
-                ) {
-                    // 取消需向上抛出，其余错误记为跳过，不阻断其它文件
-                    if e == "用户取消了导入" {
-                        return Err(e);
-                    }
-                    println!("[import] phrase 导入失败: {}", e);
-                    skipped += 1;
-                }
+                phrase_sources.push(bytes);
             }
             // 未知模块：跳过，不阻断其它模块
             _ => {
                 println!("[import] 未知 module: {}", file.module);
                 skipped += 1;
             }
+        }
+    }
+
+    if !phrase_sources.is_empty() {
+        if let Err(e) = import_phrase_group(
+            &phrase_name,
+            &phrase_sources,
+            &subject_dir,
+            &tmp_root,
+            &cancel,
+            &mut imported,
+            &mut skipped,
+            &mut duplicates,
+        ) {
+            // 取消需向上抛出，其余错误记为跳过，不阻断整体返回
+            if e == "用户取消了导入" {
+                return Err(e);
+            }
+            println!("[import] phrase 导入失败: {}", e);
+            skipped += 1;
         }
     }
 
