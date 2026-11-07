@@ -53,9 +53,55 @@ pub fn get_db_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(db_file)
 }
 
+/// 可见短语集合（列表 / 搜索 / 居中窗口共用）。
+/// state=1 表示 base 被 user 覆盖 / 被用户删除（屏蔽态）—— 直接跳过，不参与查询：
+/// 各探测 / 合并 / 路由 SQL 里统一用 `(source='user' OR (source='base' AND state=0))` 过滤。
+/// ⚠【终态铁律】state=1 一旦写入就是终态，之后任何路径都不再改动这一行：
+///    不刷内容、不重置 state、不删除、不作为 INSERT ... SELECT 的数据来源；
+///    基础库升级迁移（core/init.rs::run_migration）与清理多余 base 也必须跳过它。
+///    所有 `SET state=1` 的 UPDATE 都带 `AND state=0`，只对「没变过」的行生效。
+/// ⚠ 不再做 NOT EXISTS 相关子查询：state 本身就是屏蔽标记，被覆盖的 base 在
+///    save_phrase / apply_append / delete_phrase / 导入时已同步标 state=1，
+///    逐行再去 user 表查一遍是冗余的 O(N²)。历史库若漏标，由
+///    ensure_phrase_indexes() 的自愈补上，避免同 keyword 出现 base + user 双行。
+pub(crate) const VISIBLE_UNION_SQL: &str = "SELECT id, type, first_char, keyword, list FROM phrase_table WHERE source='user' UNION ALL SELECT id, type, first_char, keyword, list FROM phrase_table WHERE source='base' AND state=0";
+
+/// 确保工作库上有短语查询所需索引（幂等，可重复调用）。
+/// ⚠ 索引必须建在【工作库】上：种子库是只读打开的，且 run_migration 是逐行
+///    INSERT/UPDATE 把种子数据搬进工作库，schema 对象不会随数据复制过去。
+///    所以给 gen_seed.py / 种子 db 加索引对工作库毫无作用。
+/// 2890 行实测：无索引 ≈710ms/次；建 (source, keyword) 后降到毫秒级（见《软件具体流程.md》1.2）。
+/// 忽略失败（并发建索引可能抢 schema 锁），下次调用会自动重试，不阻断加载。
+pub fn ensure_phrase_indexes(conn: &Connection) {
+    let _ = conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_phrase_source_keyword ON phrase_table(source, keyword)",
+        [],
+    );
+    // 兜底自愈：历史库 / 外部导入若存在「已有 user 覆盖行、但 base 仍是 state=0」的漏标，
+    // 补标屏蔽。读取侧已改为只按 state 判定，漏标会让同一 keyword 显示两行。
+    // 先探测（走覆盖索引，正常库零写入），命中才 UPDATE；表不存在时直接跳过。
+    let need_fix: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM phrase_table b WHERE b.source='base' AND b.state=0 \
+             AND EXISTS(SELECT 1 FROM phrase_table u WHERE u.source='user' AND u.keyword=b.keyword))",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    if need_fix {
+        let _ = conn.execute(
+            "UPDATE phrase_table SET state=1 WHERE rowid IN (\
+               SELECT b.rowid FROM phrase_table b JOIN phrase_table u \
+                 ON u.source='user' AND u.keyword=b.keyword \
+               WHERE b.source='base' AND b.state=0)",
+            [],
+        );
+    }
+}
+
 // 导出：只抽取 source='user' 的行，生成一份临时 db 的字节流。
 // base 种子（source='base'）不随个人备份 / 互传走，符合双行两态模型约定。
-// 返回字节可直接作为 zip 条目写入，避免把 647 条 base 与 state=1 隐藏标记带进导出包。
+// 返回字节可直接作为 zip 条目写入，避免把 base 行与 state=1 隐藏标记带进导出包。
 pub fn export_user_rows_bytes(db_path: &Path) -> Result<Vec<u8>, String> {
     // rusqlite 无直接内存序列化 API，落到临时文件再读回字节。
     // 临时文件放在源库同目录（app 自身数据目录，各平台均可写，含 Android），避免 temp_dir 不可写。
@@ -129,7 +175,9 @@ pub fn save_phrase(
     //   - 全新关键词 → 直接插入 user 行
     let existing_source: Option<String> = conn
         .query_row(
-            "SELECT source FROM phrase_table WHERE keyword = ?1 LIMIT 1",
+            // 跳过被屏蔽的 base 行：被删过的 base 词重新添加应算「全新关键词」。
+            // ORDER BY 让 user 行优先，消除双行并存时 LIMIT 1 命中不确定的问题。
+            "SELECT source FROM phrase_table WHERE keyword = ?1 AND (source='user' OR (source='base' AND state=0)) ORDER BY (source='user') DESC LIMIT 1",
             params![keyword],
             |row| row.get(0),
         )
@@ -151,7 +199,7 @@ pub fn save_phrase(
             )
             .map_err(|e| e.to_string())?;
             conn.execute(
-                "UPDATE phrase_table SET state=1 WHERE source='base' AND keyword=?1",
+                "UPDATE phrase_table SET state=1 WHERE source='base' AND keyword=?1 AND state=0",
                 params![keyword],
             )
             .map_err(|e| e.to_string())?;
@@ -189,7 +237,8 @@ pub fn load_all_phrases(app: tauri::AppHandle) -> Result<Vec<serde_json::Value>,
 
     let mut stmt = conn
         .prepare(
-            "SELECT id, type, first_char, keyword, list FROM phrase_table ORDER BY keyword ASC",
+            // 跳过被屏蔽的 base 行（state=1），与列表/搜索/窗口口径一致
+            "SELECT id, type, first_char, keyword, list FROM phrase_table WHERE source='user' OR (source='base' AND state=0) ORDER BY keyword ASC",
         )
         .map_err(|e| e.to_string())?;
 
@@ -237,12 +286,22 @@ pub fn delete_phrase(app: tauri::AppHandle, keyword: String) -> Result<(), Strin
     } else {
         let base_updated = conn
             .execute(
-                "UPDATE phrase_table SET state=1 WHERE source='base' AND keyword = ?1",
+                "UPDATE phrase_table SET state=1 WHERE source='base' AND keyword = ?1 AND state=0",
                 params![keyword],
             )
             .map_err(|e| e.to_string())?;
         if base_updated == 0 {
-            return Err(format!("未找到关键词「{}」", keyword));
+            // 没有可见行可删：若只剩已屏蔽的 base（终态），按幂等成功处理，绝不回写 / 删除它
+            let hidden: bool = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM phrase_table WHERE source='base' AND keyword=?1 AND state=1)",
+                    params![keyword],
+                    |row| row.get(0),
+                )
+                .unwrap_or(false);
+            if !hidden {
+                return Err(format!("未找到关键词「{}」", keyword));
+            }
         }
         Ok(())
     }
@@ -274,7 +333,7 @@ pub async fn resolve_duplicate_overwrite(
             )
             .map_err(|e| e.to_string())?;
             conn.execute(
-                "UPDATE phrase_table SET state=1 WHERE source='base' AND keyword=?1",
+                "UPDATE phrase_table SET state=1 WHERE source='base' AND keyword=?1 AND state=0",
                 params![keyword],
             )
             .map_err(|e| e.to_string())?;
@@ -291,7 +350,8 @@ fn apply_append(conn: &Connection, keyword: &str, list: &str) -> Result<(), Stri
     // 取现有 list 与是否为 base 行（优先 user 行；无则 base 行）
     let row: Option<(String, bool)> = conn
         .query_row(
-            "SELECT list, (source='base') FROM phrase_table WHERE keyword=?1 ORDER BY source DESC LIMIT 1",
+            // 跳过被屏蔽的 base：否则会把用户已删除/已覆盖的旧 list 又合并回来
+            "SELECT list, (source='base') FROM phrase_table WHERE keyword=?1 AND (source='user' OR (source='base' AND state=0)) ORDER BY source DESC LIMIT 1",
             params![keyword],
             |r| Ok((r.get::<_,String>(0)?, r.get::<_,bool>(1)?)),
         )
@@ -341,7 +401,7 @@ fn apply_append(conn: &Connection, keyword: &str, list: &str) -> Result<(), Stri
         )
         .map_err(|e| e.to_string())?;
         conn.execute(
-            "UPDATE phrase_table SET state=1 WHERE source='base' AND keyword=?1",
+            "UPDATE phrase_table SET state=1 WHERE source='base' AND keyword=?1 AND state=0",
             params![keyword],
         )
         .map_err(|e| e.to_string())?;
@@ -396,7 +456,7 @@ pub async fn resolve_duplicates_batch(
                         )
                         .map_err(|e| e.to_string())?;
                         conn.execute(
-                            "UPDATE phrase_table SET state=1 WHERE source='base' AND keyword=?1",
+                            "UPDATE phrase_table SET state=1 WHERE source='base' AND keyword=?1 AND state=0",
                             params![item.keyword],
                         )
                         .map_err(|e| e.to_string())?;
@@ -669,7 +729,8 @@ pub async fn batch_entry_phrases(
             // 查库内现状：优先 user 行（'user' > 'base'，DESC 取前）；无则 base 行
             let existing: Option<(String, bool)> = conn
                 .query_row(
-                    "SELECT list, (source='base') FROM phrase_table WHERE keyword=?1 ORDER BY source DESC LIMIT 1",
+                    // 跳过被屏蔽的 base：否则会把用户已删除/已覆盖的旧 list 又合并回来
+            "SELECT list, (source='base') FROM phrase_table WHERE keyword=?1 AND (source='user' OR (source='base' AND state=0)) ORDER BY source DESC LIMIT 1",
                     params![keyword],
                     |r| Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?)),
                 )
@@ -738,7 +799,7 @@ pub async fn batch_entry_phrases(
                         )
                         .map_err(|e| e.to_string())?;
                         conn.execute(
-                            "UPDATE phrase_table SET state=1 WHERE source='base' AND keyword=?1",
+                            "UPDATE phrase_table SET state=1 WHERE source='base' AND keyword=?1 AND state=0",
                             params![entry.keyword],
                         )
                         .map_err(|e| e.to_string())?;
@@ -800,6 +861,8 @@ pub fn load_phrases_page(
         [],
     )
     .map_err(|e| e.to_string())?;
+    // 老库升级后首次打开短语页自动补索引（纯代码自愈，无需替换 db 文件）
+    ensure_phrase_indexes(&conn);
 
     // 按首字母 / 中文构造 WHERE 条件；占位符编号与参数数组严格对齐：
     //   * / # 分支：无过滤参数，LIMIT/OFFSET 用 ?1/?2，参数 [limit, offset]
@@ -808,9 +871,9 @@ pub fn load_phrases_page(
     let char_filter = char.trim();
     let is_letter = !(char_filter.is_empty() || char_filter == "*" || char_filter == "#");
 
-    // 双行模型加载：user 行始终显示；base 行仅当 state=0 且未被同 keyword 的 user 行覆盖时才显示
-    // （base 被覆盖时 state=1，或存在 user 覆盖行 → 都隐藏，由 user 行代表该词，避免重复/旧版显示）
-    let union_sql = r"SELECT id, type, first_char, keyword, list FROM phrase_table WHERE source='user' UNION ALL SELECT id, type, first_char, keyword, list FROM phrase_table b WHERE b.source='base' AND b.state=0 AND NOT EXISTS (SELECT 1 FROM phrase_table u WHERE u.source='user' AND u.keyword=b.keyword)";
+    // 双行模型加载：user 行恒显示；base 行只有 state=0 才显示。
+    // state=1（被覆盖 / 用户删除）即屏蔽态，直接跳过，不再做 NOT EXISTS 相关子查询。
+    let union_sql = VISIBLE_UNION_SQL;
 
     let inner_filter: String = if is_letter {
         String::from("WHERE lower(substr(sub.keyword,1,1)) = lower(?1)")
@@ -870,6 +933,120 @@ pub fn load_phrases_page(
     Ok(serde_json::json!({ "rows": rows_vec, "total": total }))
 }
 
+// 以某个关键词为锚点，取「上下合计 limit 条」的居中窗口（编辑保存后刷新用）。
+// 一次 IPC 同时返回窗口数据 / 总数 / 锚点排名 / 窗口绝对起点，前端不再需要
+// 从 offset=0 重查后逐页补齐，也不必事后滚回修改位置。
+// 筛选规则（* 全局 / # 中文首字符 / 单个字母）与 load_phrases_page 完全一致。
+#[tauri::command(rename_all = "snake_case")]
+pub fn load_phrase_window(
+    app: tauri::AppHandle,
+    keyword: String,
+    char: String,
+    limit: i64,
+) -> Result<serde_json::Value, String> {
+    let db_path = get_db_path(&app)?;
+    let conn = Connection::open(&db_path).map_err(|e| e.to_string())?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS phrase_table (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            type TEXT,
+            first_char TEXT,
+            keyword TEXT,
+            list TEXT,
+            source TEXT DEFAULT 'user',
+            state INTEGER DEFAULT 0
+        )",
+        [],
+    )
+    .map_err(|e| e.to_string())?;
+    ensure_phrase_indexes(&conn);
+
+    let char_filter = char.trim();
+    let is_letter = !(char_filter.is_empty() || char_filter == "*" || char_filter == "#");
+    let limit = if limit <= 0 { 100 } else { limit };
+
+    // 被屏蔽(state=1)的 base 直接跳过，不再对它做 NOT EXISTS 相关子查询
+    let union_sql = VISIBLE_UNION_SQL;
+
+    let inner_filter: String = if is_letter {
+        String::from("WHERE lower(substr(sub.keyword,1,1)) = lower(?1)")
+    } else if char_filter == "#" {
+        String::from("WHERE substr(sub.keyword,1,1) >= '一' AND substr(sub.keyword,1,1) <= '鿿'")
+    } else {
+        String::new()
+    };
+
+    // 锚点排名：当前筛选下排在 keyword 之前的条数。
+    // 与 ORDER BY sub.keyword ASC 同用 SQLite 默认 BINARY collation，边界不漏行。
+    // letter 分支 ?1=字母、?2=关键词；其余分支 ?1=关键词（# 的中文条件无参数）。
+    let rank_filter = if is_letter {
+        format!("{} AND sub.keyword < ?2", inner_filter)
+    } else if inner_filter.is_empty() {
+        String::from("WHERE sub.keyword < ?1")
+    } else {
+        format!("{} AND sub.keyword < ?1", inner_filter)
+    };
+    let rank_sql = format!("SELECT COUNT(*) FROM ({}) sub {}", union_sql, rank_filter);
+    let rank: i64 = if is_letter {
+        conn.query_row(&rank_sql, params![char_filter, keyword.as_str()], |row| row.get(0))
+    } else {
+        conn.query_row(&rank_sql, params![keyword.as_str()], |row| row.get(0))
+    }
+    .map_err(|e| e.to_string())?;
+
+    let count_sql = format!("SELECT COUNT(*) FROM ({}) sub {}", union_sql, inner_filter);
+    let total: i64 = if is_letter {
+        conn.query_row(&count_sql, params![char_filter], |row| row.get(0))
+    } else {
+        conn.query_row(&count_sql, [], |row| row.get(0))
+    }
+    .map_err(|e| e.to_string())?;
+
+    // 窗口以锚点为中心（上下各约半屏），靠近首尾时夹到合法范围
+    let max_start = (total - limit).max(0);
+    let start_offset = (rank - limit / 2).clamp(0, max_start);
+
+    let select_sql = if is_letter {
+        format!(
+            "SELECT * FROM ({}) sub {} ORDER BY sub.keyword ASC LIMIT ?2 OFFSET ?3",
+            union_sql, inner_filter
+        )
+    } else {
+        format!(
+            "SELECT * FROM ({}) sub {} ORDER BY sub.keyword ASC LIMIT ?1 OFFSET ?2",
+            union_sql, inner_filter
+        )
+    };
+    let mut stmt = conn.prepare(&select_sql).map_err(|e| e.to_string())?;
+    let map_row = |row: &rusqlite::Row| -> rusqlite::Result<serde_json::Value> {
+        Ok(serde_json::json!({
+            "id": row.get::<_,i64>(0)?,
+            "type": row.get::<_,String>(1)?,
+            "first_char": row.get::<_,String>(2)?,
+            "keyword": row.get::<_,String>(3)?,
+            "list": row.get::<_,String>(4)?
+        }))
+    };
+    let rows = if is_letter {
+        stmt.query_map(params![char_filter, limit, start_offset], map_row)
+    } else {
+        stmt.query_map(params![limit, start_offset], map_row)
+    }
+    .map_err(|e| e.to_string())?;
+
+    let mut rows_vec = Vec::new();
+    for r in rows {
+        rows_vec.push(r.map_err(|e| e.to_string())?);
+    }
+
+    Ok(serde_json::json!({
+        "rows": rows_vec,
+        "total": total,
+        "rank": rank,
+        "startOffset": start_offset,
+    }))
+}
+
 // 全局搜索短语：跨全部数据按关键词模糊匹配，分页返回 { rows, total }
 // （前端搜索框输入时调用，避免一次性加载全部；滚动到底继续翻页）
 #[tauri::command(rename_all = "snake_case")]
@@ -894,12 +1071,14 @@ pub fn search_phrases(
         [],
     )
     .map_err(|e| e.to_string())?;
+    ensure_phrase_indexes(&conn);
 
     // 模糊匹配：%keyword%；SQLite 的 LIKE 对 ASCII 默认不区分大小写
     let pattern = format!("%{}%", keyword);
 
-    // 双行模型：搜索同样 user 优先，base 仅 state=0 且无 user 覆盖才出现
-    let union_sql = r"SELECT id, type, first_char, keyword, list FROM phrase_table WHERE source='user' UNION ALL SELECT id, type, first_char, keyword, list FROM phrase_table b WHERE b.source='base' AND b.state=0 AND NOT EXISTS (SELECT 1 FROM phrase_table u WHERE u.source='user' AND u.keyword=b.keyword)";
+    // 双行模型：搜索同样 user 行恒出、base 仅 state=0 才出。
+    // 被屏蔽(state=1)的 base 直接跳过，不再做 NOT EXISTS 相关子查询。
+    let union_sql = VISIBLE_UNION_SQL;
 
     let select_sql = format!(
         "SELECT * FROM ({}) sub WHERE sub.keyword LIKE ?1 ORDER BY sub.keyword ASC LIMIT ?2 OFFSET ?3",
@@ -945,7 +1124,8 @@ pub fn keyword_exists(app: tauri::AppHandle, keyword: String) -> Result<bool, St
     let conn = Connection::open(&db_path).map_err(|e| e.to_string())?;
     let exists: bool = conn
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM phrase_table WHERE keyword = ?1)",
+            // 被屏蔽的 base 不算「已存在」：用户删掉该词后重新添加应走新建，而非撞词追加
+            "SELECT EXISTS(SELECT 1 FROM phrase_table WHERE keyword = ?1 AND (source='user' OR (source='base' AND state=0)))",
             params![keyword],
             |row| row.get(0),
         )

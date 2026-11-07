@@ -349,14 +349,16 @@ fn import_phrase_bytes(
                 .map_err(|e| e.to_string())?;
                 let base_exists: bool = tx
                     .query_row(
-                        "SELECT EXISTS(SELECT 1 FROM phrase_table WHERE keyword = ?1 AND source='base')",
+                        // 只有未被屏蔽(state=0)的 base 才算「需要隐藏的干净覆盖」；
+                        // 已被用户删除/覆盖的 base 保持 state=1，直接跳过
+                        "SELECT EXISTS(SELECT 1 FROM phrase_table WHERE keyword = ?1 AND source='base' AND state=0)",
                         params![kb],
                         |r| r.get(0),
                     )
                     .unwrap_or(false);
                 if base_exists {
                     tx.execute(
-                        "UPDATE phrase_table SET state=1 WHERE source='base' AND keyword=?1",
+                        "UPDATE phrase_table SET state=1 WHERE source='base' AND keyword=?1 AND state=0",
                         params![kb],
                     )
                     .map_err(|e| e.to_string())?;

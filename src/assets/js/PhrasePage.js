@@ -3,7 +3,8 @@
 // 这里集中存放 PhrasePage 的所有状态与业务逻辑，供 .vue 的
 // <script setup> 通过 usePhrasePage() 解构使用。
 // 包含：词条增删改、重复关键词“追加”对话框、分页懒加载
-//   （启动时加载 PAGE_SIZE 条，滚到底再加载下一页）。
+//   （启动时加载 PAGE_SIZE 条，滚到底再加载下一页；DOM 用滑动窗口裁剪，
+//    恒定最多 MAX_RENDER 个卡片，避免滚到底后几千个节点拖慢滚动）。
 // ============================================================
 
 // Tauri
@@ -20,6 +21,11 @@ import { Search } from '@element-plus/icons-vue'
 import { reactive, ref, onMounted, nextTick, computed, toRaw, onUnmounted, watch } from 'vue'
 
 const PAGE_SIZE = 100
+// 滑动窗口：DOM 里最多保留的卡片数。往下滚裁掉头部、往上滚裁掉尾部，
+// 被裁掉的数据仍由现有 loadPrev / loadMore 按 windowStart / loadedCount 取回。
+// 300 条约 6000 个 DOM 节点，滚动时不再出现「几千个卡片整树重排」。
+const MAX_RENDER = 300
+const TRIM_STEP = 100
 
 export function usePhrasePage() {
   // 每条短语条目分配稳定 uid：拖拽排序 / 展开状态（activeNames 用 uid 跟踪）
@@ -64,12 +70,29 @@ export function usePhrasePage() {
   const listScrollRef = ref(null)
 
   // 分页状态
+  // windowStart：当前窗口在「后端排序」中的绝对起点。普通加载恒为 0；
+  //   编辑保存后的居中窗口会落在中间某处，前后仍能继续双向翻页。
+  let windowStart = 0
+  const loadingPrev = ref(false)
+  // 向前翻页取到空结果时置位，避免滚动事件高频反复发同一个请求
+  let prevExhausted = false
+  // 窗口刷新期间抑制搜索框 / phraseDataVersion 触发的普通重载，
+  // 否则它们会用 offset=0 的第一页覆盖刚定位好的窗口。
+  let suppressReload = false
   const loadedCount = ref(0)
   const totalCount = ref(0)
   const loadingMore = ref(false)
   const hasMore = computed(() => loadedCount.value < totalCount.value)
+  // 窗口起点之前还有多少条（= windowStart）。windowStart 是普通变量不是响应式，
+  // 用两个响应式量相减，模板里的「上方还有 N 条」提示条才能自动更新。
+  const aboveCount = computed(() =>
+    Math.max(0, loadedCount.value - allPhraseList.value.length)
+  )
   // 切换类型 / 搜索时的整体加载遮罩（转圈）
   const loading = ref(false)
+  // 保存 / 追加后的「刷新遮罩」：盖住列表，等数据替换 + 滚动定位全部完成后才撤掉。
+  // 用户第一眼看到的就是已经停在目标位置的列表，中间任何滚动都看不见。
+  const refreshMask = ref(false)
 
   function snapshotAddForm() {
     savedAddState.value = {
@@ -164,41 +187,67 @@ export function usePhrasePage() {
   //  - 搜索模式 → 后端全局 search_phrases（不受类型限制）
   //  - 浏览模式 → load_phrases_page 带上当前 char，由后端按类型过滤分页
   // 两者都只取 PAGE_SIZE 条，滚到底再取下一页
-  async function fetchPage(offset) {
+  async function fetchPage(offset, limit = PAGE_SIZE) {
     const kw = currentSearchKeyword()
     if (kw) {
-      return await invoke('search_phrases', { keyword: kw, offset, limit: PAGE_SIZE })
+      return await invoke('search_phrases', { keyword: kw, offset, limit })
     }
-    return await invoke('load_phrases_page', { char: activeChar.value, offset, limit: PAGE_SIZE })
+    return await invoke('load_phrases_page', { char: activeChar.value, offset, limit })
   }
 
   // 加载第一页（重置分页）；导入/导出完成后也走这里刷新
   // force=true 时忽略去重，强制刷新（导入/导出数据已变，即使查询条件相同也要重读）
-  // preserveScroll=true 时刷新后保持原来的滚动位置（增删改属于原地更新，不希望跳回顶部）
+  // preserveScroll=true 表示「原地刷新」（增删改）：保留当前列表与滚动位置，不清空、
+  //   不回顶部，数据回来后按 :key=item.id 做 keyed diff 原地替换。
+  //   不带 focusKeyword 时静默（不弹遮罩）；带 focusKeyword 时才盖遮罩隐藏定位过程。
+  //   ⚠ 旧实现先 allPhraseList=[] 清空 → 容器塌缩、浏览器把 scrollTop 归零 →
+  //     异步查库期间先看到空白，回来后列表从顶部刷出来，最后才在 finally 里把
+  //     scrollTop 滚回原位置。这就是「先刷新出列表、再滚动到修改位置」的跳动来源。
+  // focusKeyword：仅「撞词追加」还在用（编辑保存已改走 loadPhraseWindow 居中窗口）。
+  //   带 focusKeyword 时先用 refreshMask 盖住列表，数据替换 / 补分页 / 滚动定位
+  //   全部在遮罩下做完，最后才撤遮罩 —— 用户看到的第一帧就是「已经停在目标位置」
+  //   的列表，中间任何滚动都看不见（用户 2026-11-07 要求的交互）。
+  //   不带 focusKeyword 的原地刷新（添加 / 删除）保持静默：连遮罩都不闪，位置一寸不动。
+  //   ⚠ 窗口模式下（windowStart > 0）原地刷新按窗口起点重取，不跳回 offset=0。
   let lastLoadKey = ''
   let loadSeq = 0
-  async function loadDataFromDb(force = false, preserveScroll = false) {
+  async function loadDataFromDb(force = false, preserveScroll = false, focusKeyword = '') {
     const kw = currentSearchKeyword()
     const key = kw ? `s:${kw}` : `b:${activeChar.value}`
     // 去重：相同查询条件不重复加载（避免切换类型清空搜索框后又触发一次多余加载）
     if (!force && key === lastLoadKey) return
     lastLoadKey = key
     const seq = ++loadSeq
-    // 记录当前滚动位置（清空前），用于“原地刷新”后恢复
-    let savedScrollTop = 0
+    // 窗口模式下的「原地刷新」（添加 / 删除）不能跳回 offset=0，否则会破坏
+    // 用户刚定位好的居中窗口；按窗口起点重取同一段即可保持位置不动。
+    const keepWindow = preserveScroll && windowStart > 0
+    if (!keepWindow) windowStart = 0
+    prevExhausted = false
     const scrollEl = listScrollRef.value
-    if (preserveScroll && scrollEl) savedScrollTop = scrollEl.scrollTop
-    loading.value = true
-    allPhraseList.value = []
-    loadedCount.value = 0
-    totalCount.value = 0
+    const savedScrollTop = preserveScroll && scrollEl ? scrollEl.scrollTop : 0
+    // 只有需要「滚动定位」的刷新才盖遮罩。遮罩是不透明层，列表仍在下面正常布局、
+    // 可写 scrollTop、可量 rect，所以定位计算完全不受影响。
+    const masked = preserveScroll && !!focusKeyword
+    if (masked) refreshMask.value = true
+    // 换查询条件（切类型 / 搜索 / 导入导出）才清空列表并显示加载遮罩
+    if (!preserveScroll) {
+      loading.value = true
+      allPhraseList.value = []
+      loadedCount.value = 0
+      totalCount.value = 0
+    }
     try {
-      const res = await fetchPage(0)
+      // 窗口模式下原地刷新一次取满整个窗口，否则只取 100 条会让列表变矮，
+      // 下面「补分页直到够高」的 while 循环要连发多次 IPC 才能撑回原滚动位置。
+      const res = await fetchPage(
+        keepWindow ? windowStart : 0,
+        keepWindow ? MAX_RENDER : PAGE_SIZE
+      )
       // 若期间又发起了新的加载，丢弃这次过期结果，避免旧数据覆盖新数据
       if (seq !== loadSeq) return
       const rows = res.rows || []
       allPhraseList.value = rows.map(parseEntry)
-      loadedCount.value = allPhraseList.value.length
+      loadedCount.value = windowStart + allPhraseList.value.length
       totalCount.value = res.total ?? 0
       show_data.value = allPhraseList.value.length === 0
     } catch (err) {
@@ -208,27 +257,219 @@ export function usePhrasePage() {
         type: 'error', offset: 50, duration: 3000, customClass: 'no-hover-pause'
       })
     } finally {
-      // 仅当本次仍是“最新一次加载”时才收起转圈，避免被更早的请求误关
-      if (seq === loadSeq) loading.value = false
-      // 原地刷新：等 DOM 重绘后再恢复滚动位置
       if (preserveScroll && seq === loadSeq) {
         await nextTick()
-        // 若之前已懒加载了更多分页、滚动位置较深，刷新只重取了第一页，
-        // 内容高度不足以支撑原 scrollTop，需要继续补齐分页直到够高再恢复
-        while (hasMore.value && scrollEl && scrollEl.scrollHeight < savedScrollTop + scrollEl.clientHeight) {
-          await loadMore()
-          await nextTick()
+        // 再等一拍：watch(filteredPhraseList.length) 的 updateListFade 会改 paddingTop，
+        // 等它落定后再量位置，滚动目标才准（此时列表仍被遮罩盖着）。
+        await nextTick()
+        // 防漂移锁定：DOM 替换 / scroll anchoring 可能偷偷改 scrollTop，按回原值。
+        // ⚠ 只能在定位之前用；定位之后再调用会把目标位置拉回去。
+        const restore = () => {
+          if (!scrollEl) return
+          const maxTop = Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight)
+          const target = Math.min(savedScrollTop, maxTop)
+          if (Math.abs(scrollEl.scrollTop - target) > 1) scrollEl.scrollTop = target
         }
-        if (scrollEl) {
-          const maxTop = scrollEl.scrollHeight - scrollEl.clientHeight
-          scrollEl.scrollTop = Math.min(savedScrollTop, Math.max(0, maxTop))
+        restore()
+        // 若之前已懒加载了更多分页、滚动位置较深，刷新只重取了第一页，
+        // 内容高度不足以支撑原 scrollTop，需要继续补齐分页直到够高
+        // ⚠ 每轮校验 loadedCount 是否真的增长：loadMore 可能被 loadingMore 守卫挡住或查库失败，
+        //   此时高度不变，若无退出条件会死循环；另设页数上限兜底。
+        let guard = 0
+        while (hasMore.value && scrollEl && scrollEl.scrollHeight < savedScrollTop + scrollEl.clientHeight && guard++ < 20) {
+          const before = loadedCount.value
+          // 补页期间禁止裁剪：保持 windowStart 不变，restore / revealKeyword 才准
+          await loadMore(false)
+          await nextTick()
+          restore()
+          if (loadedCount.value <= before) break
+        }
+        // 最后一步：滚到目标词条。整个过程在遮罩下完成，用户看不见。
+        if (focusKeyword) revealKeyword(scrollEl, focusKeyword)
+        // 补页期间禁止裁剪（否则窗口起点会变、定位基准对不上），定位完成后
+        // 统一把 DOM 收敛回 MAX_RENDER。trimHead 自带 rect 补偿，收敛时画面不动。
+        let trimGuard = 0
+        while (scrollEl && allPhraseList.value.length > MAX_RENDER && trimGuard++ < 20) {
+          await trimHead(scrollEl)
         }
       }
+      // 遮罩必须等上面全部动作（含滚动定位）做完才撤，否则会露出中间态。
+      // 撤掉后 Vue 在微任务里更新 DOM，浏览器绘制时列表已经在目标位置。
+      // 故意不加 seq 判断：异常 / 请求被抢占时也必须撤掉，避免遮罩卡死。
+      if (masked) refreshMask.value = false
+      // 仅当本次仍是“最新一次加载”时才收起转圈，避免被更早的请求误关
+      if (seq === loadSeq) loading.value = false
     }
   }
 
+  // 把指定关键词的词条滚到视口内（只在刷新遮罩下调用，用户看不到滚动过程）。
+  // ⚠ 用 rect 差值算内容坐标：.grammar 是 grid 容器且未设 position，offsetTop 的
+  //   参照对象不是它，直接用 offsetTop 会偏；rect 差值 + scrollTop - paddingTop 才准确。
+  // ⚠ 判断条件是「词条顶部是否已在视口内」，不是「整条是否完整可见」：
+  //   长词条（height > view）用后者会恒不成立，导致每次保存都滚一下（历史 bug）。
+  function revealKeyword(wrap, keyword) {
+    if (!wrap) return
+    const idx = allPhraseList.value.findIndex(x => x.keyword === keyword)
+    if (idx < 0) return   // 不在已加载的页内（如改关键词后跨到很靠后）→ 保持原位置
+    const el = wrap.querySelectorAll('.knowledge')[idx]
+    if (!el) return
+    const pad = parseFloat(getComputedStyle(wrap).paddingTop) || 0
+    const top = el.getBoundingClientRect().top - wrap.getBoundingClientRect().top + wrap.scrollTop - pad
+    const height = el.offsetHeight
+    const view = wrap.clientHeight
+    const cur = wrap.scrollTop
+    // 顶部已可见 → 完全不动（改了内容但没改关键词时就是这种情况）
+    if (top >= cur && top < cur + view) return
+    // 短词条居中；长词条顶部对齐，避免把开头切掉
+    const target = height <= view ? top - (view - height) / 2 : top
+    const max = Math.max(0, wrap.scrollHeight - wrap.clientHeight)
+    wrap.scrollTop = Math.max(0, Math.min(target, max))
+  }
+
+  // 编辑保存后：以「修改后的关键词」为锚点重新加载一个居中窗口（上下合计 PAGE_SIZE 条）。
+  // 不再从 offset=0 重查后逐页补齐，也不做事后滚回 —— 窗口本身就把目标词条放在中间，
+  // 全部动作（切类型 / 查库 / 渲染 / 定位）都在不透明遮罩下完成，撤遮罩即最终画面。
+  // 关键词没变时也走这里（用户 2026-11-07 定稿：统一重新加载居中窗口）。
+  function charForKeyword(kw, current) {
+    // 当前是「* 全局」时保持全局，不因为改了关键词就跳进某个字母分类
+    if (current === '*') return '*'
+    const c = (kw || '').trim().charAt(0)
+    if (!c) return '*'
+    if (/^[a-z]$/i.test(c)) return c.toUpperCase()
+    if (c >= '\u4e00' && c <= '\u9fff') return '#'
+    return '*'   // 数字 / 符号开头：退回全局，保证刚改的词条一定可见
+  }
+
+  // 把窗口内第 idx 条瞬时滚到视口中央（长词条则顶部对齐）。
+  // 用 rect 差值算内容坐标：.grammar 是 grid 且未设 position，offsetTop 参照对象不对。
+  function centerWindowItem(wrap, idx) {
+    if (!wrap || idx < 0) return
+    const el = wrap.querySelectorAll('.knowledge')[idx]
+    if (!el) return
+    const pad = parseFloat(getComputedStyle(wrap).paddingTop) || 0
+    const top = el.getBoundingClientRect().top - wrap.getBoundingClientRect().top + wrap.scrollTop - pad
+    const height = el.offsetHeight
+    const view = wrap.clientHeight
+    const target = height <= view ? top - (view - height) / 2 : top
+    const max = Math.max(0, wrap.scrollHeight - wrap.clientHeight)
+    wrap.scrollTop = Math.max(0, Math.min(target, max))
+  }
+
+  async function loadPhraseWindow(keyword) {
+    const wrap = listScrollRef.value
+    const targetChar = charForKeyword(keyword, activeChar.value)
+    // 先抑制：清空搜索框 / 切类型会触发 watch 里 offset=0 的普通重载，覆盖窗口结果
+    suppressReload = true
+    refreshMask.value = true
+    prevExhausted = false
+    try {
+      // 搜索模式下改词后新词可能不再匹配搜索词 → 清空搜索并跳到新词条
+      if (currentSearchKeyword()) search_keyword_input_content.value = ''
+      if (activeChar.value !== targetChar) activeChar.value = targetChar
+      await nextTick()   // 让上述响应式变更与被抑制的 watch 先落定
+
+      const res = await invoke('load_phrase_window', {
+        keyword,
+        char: targetChar,
+        limit: PAGE_SIZE,
+      })
+      const rows = res.rows || []
+      allPhraseList.value = rows.map(parseEntry)
+      windowStart = res.startOffset ?? 0
+      // loadedCount 记「绝对偏移」，这样现有 loadMore 的 fetchPage(loadedCount) 自动对齐窗口末尾
+      loadedCount.value = windowStart + allPhraseList.value.length
+      totalCount.value = res.total ?? 0
+      show_data.value = allPhraseList.value.length === 0
+      lastLoadKey = ''   // 窗口之后允许同类筛选再次正常重载
+
+      await nextTick()
+      await nextTick()   // 等 updateListFade 的 paddingTop 稳定再定位
+      centerWindowItem(wrap, Math.max(0, (res.rank ?? 0) - windowStart))
+    } catch (err) {
+      console.error('窗口加载失败', err)
+      ElMessage({
+        message: `刷新失败：${err}`, type: 'error', offset: 50,
+        duration: 3000, customClass: 'no-hover-pause'
+      })
+      // 兜底：退回普通重载，避免停在旧数据上
+      loadDataFromDb(true)
+    } finally {
+      suppressReload = false
+      // 不加 seq 判断：异常 / 被抢占时也必须撤掉，避免遮罩卡死
+      refreshMask.value = false
+      loading.value = false
+    }
+  }
+
+  // 窗口往前翻一页（用户滚到窗口顶部且 windowStart > 0 时触发）。
+  // prepend 会让已有内容整体下移，必须把 scrollTop 补偿回来，否则画面会跳。
+  async function loadPrev() {
+    if (loadingPrev.value || windowStart <= 0 || prevExhausted) return
+    const wrap = listScrollRef.value
+    const firstEl = wrap ? wrap.querySelector('.knowledge') : null
+    const beforeTop = firstEl ? firstEl.getBoundingClientRect().top : 0
+    const take = Math.min(PAGE_SIZE, windowStart)
+    loadingPrev.value = true
+    try {
+      const res = await fetchPage(windowStart - take)
+      const rows = res.rows || []
+      if (!rows.length) { prevExhausted = true; return }
+      allPhraseList.value.unshift(...rows.map(parseEntry))
+      windowStart -= rows.length
+      loadedCount.value = windowStart + allPhraseList.value.length
+      totalCount.value = res.total ?? totalCount.value
+      await nextTick()
+      if (wrap && firstEl && firstEl.isConnected) {
+        // 同一个 keyed 节点被往下推了多少，就多滚多少，视觉上内容原地不动。
+        // isConnected 兜底：节点若被 Vue 重建，rect 会是 0，补偿值会把页面拉回顶部。
+        wrap.scrollTop += firstEl.getBoundingClientRect().top - beforeTop
+      }
+      // 往前取回一页后 DOM 超上限：此时视口在开头，裁掉尾部最远的卡片即可，
+      // 它们全在视口下方，移除不影响当前画面，也不动 scrollTop。
+      trimTail()
+    } catch (err) {
+      console.error('向上加载失败', err)
+      ElMessage({
+        message: `加载失败：${err}`, type: 'error', offset: 50,
+        duration: 3000, customClass: 'no-hover-pause'
+      })
+    } finally {
+      loadingPrev.value = false
+    }
+  }
+
+  // ---------- 滑动窗口裁剪 ----------
+  // 只裁「远离视口」的一端：loadMore 由滚到底触发，视口一定在末尾 → 裁头部安全；
+  // loadPrev 由滚到顶触发，视口一定在开头 → 裁尾部安全。两者都不会裁掉正在看的内容。
+  // 裁头部复用 loadPrev 的同一套 rect 补偿：记录裁剪后会成为第 0 条的那个 DOM 节点，
+  // DOM 更新后把它的视觉位移补回 scrollTop —— 顶部提示条的出现/消失也自动算进去，
+  // 不需要测量卡片高度，也不怕卡片高度不固定。
+  async function trimHead(wrap) {
+    const cut = Math.min(allPhraseList.value.length - MAX_RENDER, TRIM_STEP)
+    if (cut <= 0) return
+    const nodes = wrap ? wrap.querySelectorAll('.knowledge') : []
+    const anchor = nodes[cut] || null
+    const beforeTop = anchor ? anchor.getBoundingClientRect().top : 0
+    allPhraseList.value.splice(0, cut)
+    windowStart += cut          // loadedCount = windowStart + len 保持不变
+    await nextTick()
+    if (wrap && anchor && anchor.isConnected) {
+      wrap.scrollTop += anchor.getBoundingClientRect().top - beforeTop
+    }
+  }
+
+  function trimTail() {
+    const cut = Math.min(allPhraseList.value.length - MAX_RENDER, TRIM_STEP)
+    if (cut <= 0) return
+    allPhraseList.value.splice(allPhraseList.value.length - cut, cut)
+    // 尾部被裁掉后重新算作「未加载」，之后往下滚会由 loadMore 取回
+    loadedCount.value = windowStart + allPhraseList.value.length
+  }
+
   // 滚到底：加载下一页并追加到列表
-  async function loadMore() {
+  // allowTrim=false 给「原地刷新补分页」用：补页期间不能裁头部，否则窗口起点会变，
+  // restore() / revealKeyword() 的定位基准就对不上了。
+  async function loadMore(allowTrim = true) {
     if (loadingMore.value) return
     if (loadedCount.value >= totalCount.value) return
     loadingMore.value = true
@@ -237,8 +478,15 @@ export function usePhrasePage() {
       const rows = res.rows || []
       const parsed = rows.map(parseEntry)
       allPhraseList.value.push(...parsed)
-      loadedCount.value = allPhraseList.value.length
+      // 绝对偏移：窗口模式下 windowStart 可能 > 0，不能直接用数组长度
+      loadedCount.value = windowStart + allPhraseList.value.length
       totalCount.value = res.total ?? totalCount.value
+      // 追加后 DOM 可能超过上限：滚到底时视口在末尾，裁掉头部最远的那些卡片。
+      // 先等新卡片进 DOM，trimHead 才量得到将成为第 0 条的锚点节点。
+      if (allowTrim) {
+        await nextTick()
+        await trimHead(listScrollRef.value)
+      }
     } catch (err) {
       console.error('加载更多失败', err)
       ElMessage({ message: `加载失败：${err}`, type: 'error', offset: 50, duration: 3000, customClass: 'no-hover-pause' })
@@ -256,18 +504,30 @@ export function usePhrasePage() {
     if (!el) return
     listHasMoreBelow.value = el.scrollTop + el.clientHeight < el.scrollHeight - 8
     const top = Math.max(0, Math.min(el.scrollTop, 12))
-    el.style.marginTop = top + 'px'
-    el.style.paddingTop = (12 - top) + 'px'
+    const mt = top + 'px'
+    const pt = (12 - top) + 'px'
+    // 值没变就不写：节点多时每帧无条件写样式会反复触发重排
+    if (el.style.marginTop !== mt) el.style.marginTop = mt
+    if (el.style.paddingTop !== pt) el.style.paddingTop = pt
   }
 
+  let scrollRaf = 0
   function onListScroll() {
-    const el = listScrollRef.value
-    if (!el) return
-    updateListFade()
-    // 距底部 80px 内即触发加载下一页
-    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 80) {
-      loadMore()
-    }
+    // 一帧最多处理一次：避免高频 scroll 事件里反复读 scrollHeight、写 paddingTop
+    // 造成 layout thrashing（DOM 节点多时这是掉帧主因）。
+    if (scrollRaf) return
+    scrollRaf = requestAnimationFrame(() => {
+      scrollRaf = 0
+      const el = listScrollRef.value
+      if (!el) return
+      updateListFade()
+      // 居中窗口前方还有数据、且滚到窗口顶部 → 往前补一页（双向继续加载）
+      if (el.scrollTop <= 24 && windowStart > 0) loadPrev()
+      // 距底部 80px 内即触发加载下一页
+      if (el.scrollTop + el.clientHeight >= el.scrollHeight - 80) {
+        loadMore()
+      }
+    })
   }
 
   function clear_search_input() {
@@ -377,7 +637,11 @@ export function usePhrasePage() {
             message: isEdit ? '修改成功' : '保存成功',
             type: 'success', offset: 50, duration: 3000, customClass: 'no-hover-pause'
           })
-          loadDataFromDb(true, true)
+          // 编辑：以修改后的关键词为中心重新加载 100 条窗口（自动切类型 + 定位），
+          //   全程在遮罩下完成，用户第一眼就是已停在目标位置的列表。
+          // 添加：面板仍开着要连续录入，走静默原地刷新，不闪遮罩、不定位。
+          if (isEdit) loadPhraseWindow(savePayload.keyword)
+          else loadDataFromDb(true, true)
         })
         .catch((err) => {
           console.error('保存失败', err)
@@ -427,7 +691,8 @@ export function usePhrasePage() {
     })()
       .then(() => {
         ElMessage({ message: '已追加到已有词条', type: 'success', offset: 50, duration: 3000, customClass: 'no-hover-pause' })
-        loadDataFromDb(true, true)
+        // 盖遮罩隐藏刷新 + 定位过程，完成后显示已停在目标词条的列表
+        loadDataFromDb(true, true, targetKeyword)
       })
       .catch((err) => {
         console.error('追加失败', err)
@@ -1011,6 +1276,7 @@ export function usePhrasePage() {
   // 搜索框输入 → 立即重新加载第一页（与切换类型一致：输入即查、即时转圈）
   // 后端查库很快，且 loadSeq 并发守卫会丢弃过期请求、lastLoadKey 去重避免重复查询
   watch(search_keyword_input_content, () => {
+    if (suppressReload) return   // 窗口刷新期间清空搜索框不触发普通重载
     loadDataFromDb()
   })
 
@@ -1025,6 +1291,7 @@ export function usePhrasePage() {
 
   // 导入/导出完成后，App 通过 phraseDataVersion 自增触发本页刷新（强制重读）
   watch(phraseDataVersion, () => {
+    if (suppressReload) return
     loadDataFromDb(true)
   })
 
@@ -1053,6 +1320,7 @@ export function usePhrasePage() {
   })
 
   onUnmounted(() => {
+    if (scrollRaf) cancelAnimationFrame(scrollRaf)
     // 组件卸载时若还在拖拽，必须停掉帧循环 + 摘掉全局指针监听，否则 rAF 会一直跑
     drag.active = false
     stopDragLoop()
@@ -1096,8 +1364,9 @@ export function usePhrasePage() {
     keywordInput,
     clear_keyword_content,
     openAddForm,
-    // 懒加载
+    // 懒加载 / 滑动窗口
     allPhraseList,
+    aboveCount,
     listScrollRef,
     formScroll,
     onListScroll,
@@ -1105,6 +1374,7 @@ export function usePhrasePage() {
     loadingMore,
     hasMore,
     loading,
+    refreshMask,
     // 空状态
     isSearching,
     emptyDesc,

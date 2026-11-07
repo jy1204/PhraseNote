@@ -30,6 +30,7 @@
           </el-empty>
         </div>
         <div class="grammar" ref="listScrollRef" @scroll="onListScroll" v-show="!show_data" v-loading="loading" element-loading-text="加载中" element-loading-background="var(--pn-loading-bg)">
+          <div v-if="aboveCount > 0" class="pn-window-hint">上方还有 {{ aboveCount }} 条，向上滚动加载</div>
           <div v-for="item in filteredPhraseList" :key="item.id" class="knowledge">
             <h1>
               {{ item.keyword }}
@@ -45,6 +46,12 @@
           </div>
           <div v-if="loadingMore" class="load-tip">加载中…</div>
           <div v-else-if="!hasMore && allPhraseList.length > 0" class="load-tip">没有更多了</div>
+        </div>
+        <!-- 保存 / 追加后的刷新遮罩：盖住列表，等数据替换 + 滚动定位全部做完才撤掉。
+             用户看到的第一帧就是已经停在目标位置的列表，中间的滚动过程不可见。 -->
+        <div v-if="refreshMask" class="pn-refresh-mask">
+          <span class="pn-refresh-spinner" aria-hidden="true"></span>
+          <span>加载中…</span>
         </div>
       </div>
       <!-- 添加/编辑词条表单面板 -->
@@ -169,8 +176,9 @@ const {
   keywordInput,
   clear_keyword_content,
   openAddForm,
-  // 分页懒加载
+  // 分页懒加载 / 滑动窗口
   allPhraseList,
+  aboveCount,
   listScrollRef,
   formScroll,
   onListScroll,
@@ -178,6 +186,7 @@ const {
   loadingMore,
   hasMore,
   loading,
+  refreshMask,
   // 空状态
   isSearching,
   emptyDesc,
