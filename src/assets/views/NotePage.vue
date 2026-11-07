@@ -308,7 +308,7 @@
   function batchMove() {
     if (!hasSelection.value) return
     if (selectedNoteCount.value === 0) {
-      ElMessage({ message: '没有可移动的笔记', type: 'info' })
+      ElMessage({ message: '没有可移动的笔记', type: 'info' , offset: 50, duration: 3000})
       return
     }
     moveDialog.value = { visible: true, noteId: null, fromFolderId: null, batch: true }
@@ -350,7 +350,7 @@
     if (noteIds.length > 0) await batchDeleteNotesDb(noteIds)
     if (folderIdsToDelete.length > 0) await batchDeleteFoldersDb(folderIdsToDelete)
     checkedFolders.value.clear(); checkedNotes.value.clear()
-    ElMessage({ message: `已删除 ${noteIds.length} 篇、${foldersToDelete.length} 个目录`, type: 'success' })
+    ElMessage({ message: `已删除 ${noteIds.length} 篇、${foldersToDelete.length} 个目录`, type: 'success', offset: 50, duration: 3000 })
   }
 
   // 新建文件夹（＋按钮：先弹命名提示，确认后添加；取消则不创建）
@@ -410,7 +410,7 @@
   // 删除文件夹：默认目录拦截 + 确认
   function deleteFolder(folder) {
     if (!folder.deletable) {
-      ElMessage({ message: '默认目录不可删除', type: 'warning' })
+      ElMessage({ message: '默认目录不可删除', type: 'warning', offset: 50, duration: 3000 })
       return
     }
     ElMessageBox.confirm(`确定删除文件夹“${folder.name}”及其下所有笔记？`, '删除确认', { type: 'warning', confirmButtonText: '确认', cancelButtonText: '取消' })
@@ -418,7 +418,7 @@
         const i = folders.value.findIndex((f) => f.id === folder.id)
         if (i >= 0) folders.value.splice(i, 1)
         await deleteFolderDb(folder.id)
-        ElMessage({ message: '已删除', type: 'success' })
+        ElMessage({ message: '已删除', type: 'success', offset: 50, duration: 3000 })
       })
       .catch(() => {})
   }
@@ -454,7 +454,7 @@
         const i = folder.notes.findIndex((n) => n.id === note.id)
         if (i >= 0) folder.notes.splice(i, 1)
         await deleteNoteDb(note.id)
-        ElMessage({ message: '已删除', type: 'success' })
+        ElMessage({ message: '已删除', type: 'success', offset: 50, duration: 3000})
       })
       .catch(() => {})
   }
@@ -477,7 +477,7 @@
       if (i >= 0) { const [n] = from.notes.splice(i, 1); to.notes.push(n) }
       d.visible = false
       moveNoteDb(noteId, targetFolderId)
-      ElMessage({ message: '已移动', type: 'success' })
+      ElMessage({ message: '已移动', type: 'success', offset: 50, duration: 3000 })
       return
     }
     // 批量：把去重后的选中文件移入目标文件夹，跳过“移入自身所在文件夹”
@@ -493,6 +493,8 @@
     ElMessage({
       message: ids.length > 0 ? `已移动 ${ids.length} 篇` : '没有可移动的笔记',
       type: ids.length > 0 ? 'success' : 'info',
+      offset: 50,
+      duration: 3000
     })
   }
 </script>

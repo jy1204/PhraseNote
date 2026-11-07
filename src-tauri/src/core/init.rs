@@ -16,13 +16,13 @@
 //   · 幂等 + 事务：崩溃后 migration_done 仍为 false，下次启动自动重试。
 // ============================================================
 
-use rusqlite::{params, Connection, OpenFlags};
 use rusqlite::OptionalExtension;
+use rusqlite::{Connection, OpenFlags, params};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 /// 基础词数据库版本（硬编码）。改基础词并重新生成种子 db 后，手动 +1 并重新编译。
-pub const BASE_DB_VERSION: i32 = 1;
+pub const BASE_DB_VERSION: i32 = 2;
 
 const INIT_FILE_NAME: &str = "init.json";
 
@@ -89,8 +89,7 @@ fn seed_db_path(_app: &tauri::AppHandle) -> PathBuf {
             .join("subject")
             .join("english")
             .join("phrase_db.db"),
-        exe_dir
-            .join("../../src-tauri/resource/subject/english/phrase_db.db"),
+        exe_dir.join("../../src-tauri/resource/subject/english/phrase_db.db"),
     ];
     for c in &cand {
         if c.exists() {
@@ -114,8 +113,8 @@ fn open_seed_readonly(app: &tauri::AppHandle) -> Result<(Connection, Option<Path
     fs::create_dir_all(&cache_dir).map_err(|e| e.to_string())?;
     let dst = cache_dir.join("phrase_db.db");
     fs::write(&dst, SEED_DB_BYTES).map_err(|e| e.to_string())?;
-    let conn =
-        Connection::open_with_flags(&dst, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e| e.to_string())?;
+    let conn = Connection::open_with_flags(&dst, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|e| e.to_string())?;
     Ok((conn, Some(dst)))
 }
 
@@ -125,8 +124,8 @@ fn open_seed_readonly(_app: &tauri::AppHandle) -> Result<(Connection, Option<Pat
     if !src.exists() {
         return Err("种子 db 不存在".into());
     }
-    let conn =
-        Connection::open_with_flags(&src, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e| e.to_string())?;
+    let conn = Connection::open_with_flags(&src, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|e| e.to_string())?;
     Ok((conn, None))
 }
 
@@ -206,9 +205,9 @@ fn run_migration(app: &tauri::AppHandle) -> Result<(), String> {
                     serde_json::from_str(seed_list).unwrap_or_default();
                 for item in seed_list_val {
                     let phrase = item.get("phrase").and_then(|v| v.as_str()).unwrap_or("");
-                    let exists = user_list.iter().any(|u| {
-                        u.get("phrase").and_then(|v| v.as_str()).unwrap_or("") == phrase
-                    });
+                    let exists = user_list
+                        .iter()
+                        .any(|u| u.get("phrase").and_then(|v| v.as_str()).unwrap_or("") == phrase);
                     if !phrase.is_empty() && !exists {
                         user_list.push(item);
                     }
