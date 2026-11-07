@@ -121,12 +121,57 @@
     grid-template-columns: minmax(0, 1fr);     /* 基态：手机单列；minmax(0,…) 让轨道可缩到 0，内容在卡片内换行 */
     align-content: flex-start;
     overflow-y: auto;
+    overflow-anchor: none;          /* 裁剪窗口时由 JS 用 rect 差值精确补偿，关掉自动锚定避免重复补偿 */
 }
+
+/* 滑动窗口：窗口起点之前还有数据时的提示条。固定 36px，滚到顶部会触发
+   loadPrev 把前面的数据取回来；出现/消失的位移由 trimHead 的 rect 补偿自动算进去。 */
+.content-knowledge .grammar .pn-window-hint {
+    box-sizing: border-box;
+    height: 36px;
+    line-height: 36px;
+    text-align: center;
+    font-size: 12px;
+    color: var(--pn-text-faint);
+    border-bottom: 1px dashed var(--pn-border-soft);
+    user-select: none;
+}
+
 /* 顶部留白（margin-top / padding-top）由 JS 在 updateListFade() 中随 scrollTop 实时互补：
    0 → margin0/padding12；≥12 → margin12/padding0；中间线性互补，总和恒为 12px。故此处不再写静态值。 */
 .content-knowledge .grammar::-webkit-scrollbar {
     display: none;
 }
+
+/* ---------- 保存 / 追加后的刷新遮罩 ----------
+   不透明层盖住列表区域（搜索框浮在上方仍可见）。列表在遮罩下照常布局、
+   可写 scrollTop、可量 rect；等数据替换 + 滚动定位全部做完才撤掉，
+   中途不露出任何滚动。刻意不做淡入淡出，避免过渡时半透明露出未定位的列表。 */
+.content-knowledge .pn-refresh-mask {
+    position: absolute;
+    inset: 0;
+    z-index: 5;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    background: var(--pn-bg-app);
+    color: var(--pn-text-faint);
+    font-size: 14px;
+    pointer-events: none;          /* 不吞点击（短时刷新，避免历史「点击被吞」问题）*/
+}
+/* 搜索框浮在遮罩之上，刷新期间保持可见、不闪 */
+.content-knowledge .search-keyword { position: relative; z-index: 6; }
+.pn-refresh-spinner {
+    width: 18px;
+    height: 18px;
+    border: 2px solid currentColor;
+    border-top-color: transparent;
+    border-radius: 50%;
+    opacity: .65;
+    animation: pn-refresh-spin .8s linear infinite;
+}
+@keyframes pn-refresh-spin { to { transform: rotate(360deg); } }
 
 /* 知识卡片：大圆角 + 柔和投影 + 悬停上浮 */
 .grammar .knowledge {

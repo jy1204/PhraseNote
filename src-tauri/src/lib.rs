@@ -124,6 +124,7 @@ pub fn run() {
             crate::english::phrase::save_phrase,
             crate::english::phrase::load_all_phrases,
             crate::english::phrase::load_phrases_page,
+            crate::english::phrase::load_phrase_window,
             crate::english::phrase::search_phrases,
             crate::english::phrase::keyword_exists,
             crate::english::phrase::append_phrase,

@@ -156,6 +156,11 @@ fn run_migration(app: &tauri::AppHandle) -> Result<(), String> {
         )
         .map_err(|e| e.to_string())?;
 
+    // 迁移前先建索引：下面会对每个种子逐条做 3~5 次
+    // WHERE source=? AND keyword=? 查询，无索引时是 O(N²) 全表扫（2890 条尤其明显）。
+    // 索引挂在可写的工作库上，种子库只读、不改动。
+    crate::english::phrase::ensure_phrase_indexes(&wconn);
+
     // 收集种子所有 base 行
     let mut seed_stmt = seed_conn
         .prepare("SELECT keyword, type, first_char, list FROM phrase_table WHERE source='base'")
@@ -221,38 +226,50 @@ fn run_migration(app: &tauri::AppHandle) -> Result<(), String> {
                     .map_err(|e| e.to_string())?;
             }
 
-            // base 行整体替换为种子内容；state 按是否被 user 覆盖决定
-            let base_exists: bool = wconn
+            // base 行合并规则：state=1 是【终态】——一旦被用户覆盖/删除而屏蔽，
+            // 之后不再被任何逻辑改动（不刷内容、不重置 state、不在下方清理里删除）。
+            // 否则每次基础库升级都会把用户删掉的词重新写回 state=0「复活」。
+            // ORDER BY state ASC：同 keyword 若历史库里同时存在 0/1 两行，
+            // 只要还有一行 state=0 就按「有可见行」处理，UPDATE 也只命中 state=0。
+            let base_state: Option<i64> = wconn
                 .query_row(
-                    "SELECT 1 FROM phrase_table WHERE source='base' AND keyword=?1 LIMIT 1",
+                    "SELECT COALESCE(state,0) FROM phrase_table WHERE source='base' AND keyword=?1 \
+                     ORDER BY COALESCE(state,0) ASC LIMIT 1",
                     params![kw],
-                    |_| Ok(true),
+                    |row| row.get::<_, i64>(0),
                 )
                 .optional()
-                .map_err(|e| e.to_string())?
-                .is_some();
-            let state = if has_user { 1 } else { 0 };
-            if base_exists {
-                wconn
-                    .execute(
-                        "UPDATE phrase_table SET type=?1, first_char=?2, list=?3, state=?4 \
-                         WHERE source='base' AND keyword=?5",
-                        params![ty, fc, seed_list, state, kw],
-                    )
-                    .map_err(|e| e.to_string())?;
-            } else {
-                wconn
-                    .execute(
-                        "INSERT INTO phrase_table (type, first_char, keyword, list, source, state) \
-                         VALUES (?1, ?2, ?3, ?4, 'base', ?5)",
-                        params![ty, fc, kw, seed_list, state],
-                    )
-                    .map_err(|e| e.to_string())?;
+                .map_err(|e| e.to_string())?;
+
+            match base_state {
+                Some(1) => continue, // 全是已屏蔽行：整条跳过，也不许 INSERT 出新的可见 base
+                Some(_) => {
+                    // 仅更新未被屏蔽的 base 行；有 user 覆盖行时同步标 1
+                    let state = if has_user { 1 } else { 0 };
+                    wconn
+                        .execute(
+                            "UPDATE phrase_table SET type=?1, first_char=?2, list=?3, state=?4 \
+                             WHERE source='base' AND keyword=?5 AND state=0",
+                            params![ty, fc, seed_list, state, kw],
+                        )
+                        .map_err(|e| e.to_string())?;
+                }
+                None => {
+                    // 工作库里从未有过该 base 行：按种子新建
+                    let state = if has_user { 1 } else { 0 };
+                    wconn
+                        .execute(
+                            "INSERT INTO phrase_table (type, first_char, keyword, list, source, state) \
+                             VALUES (?1, ?2, ?3, ?4, 'base', ?5)",
+                            params![ty, fc, kw, seed_list, state],
+                        )
+                        .map_err(|e| e.to_string())?;
+                }
             }
         }
 
         // 清理工作库中“已不在种子里”的 base 行（保持 base 干净）。
-        // 若某关键词同时有 user 行，删 base 不影响显示（user 仍展示）。
+        // 只删 state=0 的：已屏蔽的 base 是终态，一律原地保留不动。
         if !seed_keywords.is_empty() {
             let placeholders: String = seed_keywords
                 .iter()
@@ -260,7 +277,7 @@ fn run_migration(app: &tauri::AppHandle) -> Result<(), String> {
                 .collect::<Vec<_>>()
                 .join(",");
             let sql = format!(
-                "DELETE FROM phrase_table WHERE source='base' AND keyword NOT IN ({})",
+                "DELETE FROM phrase_table WHERE source='base' AND state=0 AND keyword NOT IN ({})",
                 placeholders
             );
             let params = rusqlite::params_from_iter(seed_keywords.iter().map(|s| s.as_str()));
