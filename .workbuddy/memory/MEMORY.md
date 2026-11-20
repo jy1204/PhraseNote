@@ -27,10 +27,34 @@
   - `init.json` = `/data/data/com.jy.tauri-app/init.json`（= app_data_dir 根）
   - 工作库 = `/data/data/com.jy.tauri-app/subject/english/phrase_db.db`
   - 种子在 APK 内 `assets`（`resource_dir()`），压缩无法直接被 SQLite 打开 → 先 copy 到 `app_data_dir/_seed_cache/` 再只读打开，用完清理。
-- **初始化/迁移**：`core/init.rs` 的 `ensure_init_and_migrate`（在 `.setup` 里、HTTP 服务前调用）；`BASE_DB_VERSION` 硬编码，改基础词流程 = 改 JSON → 重跑 gen_seed.py → 版本 +1 → 重编。迁移单事务、幂等；工作库文件不存在时强制重迁。
+- **初始化/迁移**：`core/init.rs` 的 `ensure_init_and_migrate`；**唯一入口是前端 `App.vue onMounted → invoke('ensure_init')`**（`.setup` 已不再调用，为的是窗口先渲染、先弹遮罩再异步迁移）。`BASE_DB_VERSION` 硬编码（当前 2），改基础词流程 = 改 JSON → 重跑 gen_seed.py → 版本 +1 → 重编。迁移单事务、幂等；工作库文件不存在时强制重迁；失败不写 init.json、不阻断启动、下次重试。
 
 ## 导入脚本列名坑
 - db 列名原为 `keyboard`，2026-10-26 已全局改名 `keyword`；历史脚本若还写 keyboard 会报 no such column。
+
+## 安卓自动更新的雷区（2026-11-20 闪退/不弹安装器排查结论，勿回退）
+安卓 release 是 `panic = "abort"` → 任何 Rust panic / JNI abort 都是**秒退且无日志**。已修的坑：
+1. **进度事件不能高频 emit**：`update-progress` 必须节流（「百分比变化 && 距上次 ≥200ms」）。安卓 `emit` 跨进程投递 JS 到 WebView，`MainPipe` 容量仅 8，每块都发 → UI 线程压死 → ANR → 系统杀进程 = 闪退。（Tauri issue #16169）
+2. **`find_class` 在原生线程上找不到应用自己的类**：`FindClass` 在 attach_current_thread 的线程上只用系统类加载器，`androidx.*` 属于应用 dex → ClassNotFoundException 挂起 → 后续 JNI 调用 UB → abort。**必须用 `Context.getClassLoader()` → `loadClass(...)`（2026-11-20 真机实测定稿，勿回退到 `getClass().getClassLoader()`）**。★ 大坑：`ndk_context::android_context().context()` 存的是 **Application**（tao `ndk_glue.rs` 传的是 `activity.getApplicationContext()`），**不是 Activity**！本应用 `<application>` 没写 `android:name` → 它是框架类 `android.app.Application` → `getClass().getClassLoader()` 返回 **BootClassLoader**（只认框架类）→ `loadClass("androidx.core.content.FileProvider")` 必然抛 `ClassNotFoundException`（真机截图实证）。`Context.getClassLoader()` 才返回应用的 PathClassLoader（含全部 dex）。
+3. **JNI 挂起异常必须显式清除**：jni crate 的 `check_exception!` 只返回 Err、不调 ExceptionClear。`core/update.rs` 的 `clear_pending_exception()` 每步失败先清异常。
+4. **不能用 `app.run_on_main_thread()` 拉安装器**：它在安卓上只是异步派发到 **tao event-loop 线程**（tao 用 `ndk::looper::ThreadLooper`，**不是 Android UI 线程**），且闭包内错误无法回传 → 失败被静默吞掉。改为**当前线程同步执行**（`Activity.startActivity()` 允许非 UI 线程调用）。
+5. **用 `ACTION_INSTALL_PACKAGE` 不用 `ACTION_VIEW`**：后者在部分机型抛 ActivityNotFoundException；API 26+ 官方推荐前者。
+6. **Android 8.0+ 必须先查未知来源授权**：`PackageManager.canRequestPackageInstalls()` 为 false 时启动安装器**静默失败**。要先跳 `Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES`。minSdk 24 无此方法 → 用 JNI 异常兜底判为无需授权。
+7. **失败原因必须回传前端**：原来只 eprintln，前端固定文案 → 无法定位。现在后端 Err 原样返回，前端显示 `更新失败：<真实原因>`。
+另：`lib.rs` 入口装了 panic hook，崩溃信息打到 stderr（安卓 logcat 的 RustStdout/RustStderr 标签可见）。
+安卓编译环境：`ANDROID_NDK_HOME=F:/sdk/ndk`（NDK r27d；**`F:/sdk/ndk/30.0.16248370` 只是 .installer 占位、不完整，不能用**）+ PATH 需含 `ndk/toolchains/llvm/prebuilt/windows-x86_64/bin`。验证命令：`cargo check --target aarch64-linux-android`。
+**安卓目录映射（查证过）**：`app_data_dir()` = `activity.dataDir` = `/data/user/0/<pkg>`；`app_cache_dir()` = `activity.cacheDir` = `/data/user/0/<pkg>/cache`；`root-path path="."` 的 root = `new File("/")`，实测能匹配 `/data/...` 下的文件（root 匹配一切）。
+
+## Rust mpsc 死锁坑（2026-11-20 踩过，勿重犯）
+**写线程绝不能持有数据通道的 sender 克隆**。`mpsc::Receiver::recv()` 只有在**所有 sender 都被 drop** 后才返回 Err；若写线程自己持有一份克隆，它就永久阻塞在 recv 上，而那份克隆要等写线程返回才 drop → 互相等待 → 永久死锁。症状极具迷惑性：**数据其实全部写完了**，但主流程 `writer.await` 永不返回，收尾事件发不出去 → 进度条卡在 90% 多不动。
+正确写法：错误回报走**独立通道**（`tokio::sync::oneshot`），数据通道的 sender 只由主循环保留；主循环结束时 `drop(tx)` 让 `recv()` 正常返回 Err，写线程 flush 后退出。`core/update.rs` 的下载落盘就是这个模式（并额外给 `writer.await` 加 30s 超时兜底）。
+
+## ⚠️ 方法论教训（2026-11-20 安卓更新错判复盘，务必遵守）
+- **先核实"前提假设"再下结论**：排查 JNI/安卓 context 相关问题时，必须先查清对象**实际是什么类型**（如 ndk_context 存的是 Application 还是 Activity），不要凭命名/惯性假设。我曾假定是 Activity 而写成 `getClass().getClassLoader()`，实为 Application → BootClassLoader，修了个假根因。核实手段：读上游框架源码（tao `ndk_glue.rs`）+ 真机实测。
+- **"类在 dex 里却 loadClass 失败"应优先怀疑类加载器，而非 R8 裁剪**：我曾跑偏去反汇编 dex 查 R8 是否裁掉 androidx 类，浪费时间；类一直在，是加载器拿错。
+- **改完必须跑完验证闭环再汇报**：构建测试包 → 装到目标设备 → 复现 → 确认异常消失。我改完 `Context.getClassLoader()` 后没装真机验证就被打断，导致一直基于旧包现象打转。**没在真机上验证通过的修复，不写"已修复/勿回退"这类结论。**
+- **不要把未经验证的判断写进 MEMORY.md 当"勿回退"长期约定**：错误经验一旦沉淀会持续误导。写长期结论前先自问：这条是真机/实测确认的，还是我推断的？推断的标注"待验证"。
+- **用户已经自己解决的问题，不要揽功**：2026-11-20 安卓下载安装最终是用户自己做完的，不是我修好的，复盘时如实说明。
 
 ## 导入完成提示口径（用户 2026-11-07 拍板，勿再收窄）
 - `App.vue` 的 `importSuccessCount` = 第一阶段 `res.imported`（短语静默插入词条 + 笔记目录/笔记）+ 冲突弹窗里「追加/覆盖」裁决成功的条数（`resolve_duplicates_batch` 返回的 `resolved`，逐条队列与勾选批量两条路径都要累加）。

@@ -1,6 +1,6 @@
 [package]
 name = "PhraseNote"
-version = "0.2.7"
+version = "0.2.8"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -50,6 +50,9 @@ futures-util = "0.3"
 
 # 生成文件/设备唯一 ID
 uuid = { version = "1", features = ["v4"] }
+
+# 冷更新：判断「上次检查日期是否为今天」需要日历日期（标准库无此能力）
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 # 获取本机主机名作为设备名（可选，不想用可以删掉）
 hostname = "0.4"

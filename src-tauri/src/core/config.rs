@@ -14,12 +14,50 @@ use tauri::Manager;
 
 const CONFIG_FILE_NAME: &str = "config.json";
 
+/// 外观设置：theme（深浅主题）+ scheme（主题配色）
 #[derive(Serialize, Deserialize, Default, Clone)]
-struct AppConfig {
+struct AppearanceConfig {
     #[serde(default)]
     theme: String, // "dark" | "light" | "system"
     #[serde(default)]
     scheme: String, // "" | "blue" | "sakura"
+}
+
+/// 更新设置：是否启动时自动检查更新（默认 true）
+#[derive(Serialize, Deserialize, Clone)]
+struct UpdateConfig {
+    #[serde(default = "default_check_on_start")]
+    check_on_start: bool,
+}
+
+fn default_check_on_start() -> bool {
+    true
+}
+
+impl Default for UpdateConfig {
+    fn default() -> Self {
+        Self {
+            check_on_start: true,
+        }
+    }
+}
+
+/// config.json 顶层：外观 / 更新 两块
+#[derive(Serialize, Deserialize, Default, Clone)]
+struct AppConfig {
+    #[serde(default)]
+    appearance: AppearanceConfig,
+    #[serde(default)]
+    update: UpdateConfig,
+}
+
+/// 旧扁平结构（{"theme":..,"scheme":..}），仅用于读取迁移
+#[derive(Deserialize, Default)]
+struct LegacyConfig {
+    #[serde(default)]
+    theme: String,
+    #[serde(default)]
+    scheme: String,
 }
 
 /// 配置文件所在目录
@@ -53,7 +91,27 @@ fn read_config(app: &AppHandle) -> Result<AppConfig, String> {
         return Ok(AppConfig::default());
     }
     let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    Ok(serde_json::from_str(&content).unwrap_or_default())
+    let value: serde_json::Value = serde_json::from_str(&content).unwrap_or_default();
+
+    // 兼容旧扁平结构 {"theme":..,"scheme":..}：有旧字段但没有 appearance 节点 → 迁移
+    // （读一次即写回新结构，保住用户已存的配色，不让升级把设置清空）
+    if value.get("appearance").is_none()
+        && (value.get("theme").is_some() || value.get("scheme").is_some())
+    {
+        let legacy: LegacyConfig = serde_json::from_value(value).unwrap_or_default();
+        let migrated = AppConfig {
+            appearance: AppearanceConfig {
+                theme: legacy.theme,
+                scheme: legacy.scheme,
+            },
+            update: UpdateConfig::default(),
+        };
+        // 迁移结果立刻写回，之后就都是新结构了（写失败也不阻断读取）
+        let _ = write_config(app, &migrated);
+        return Ok(migrated);
+    }
+
+    Ok(serde_json::from_value(value).unwrap_or_default())
 }
 
 /// 写回配置。采用「读–改–写」而不是整结构覆盖：
@@ -70,10 +128,10 @@ fn write_config(app: &AppHandle, cfg: &AppConfig) -> Result<(), String> {
 #[tauri::command]
 pub fn load_app_config(app: AppHandle) -> Result<Option<String>, String> {
     let cfg = read_config(&app)?;
-    if cfg.theme.is_empty() {
+    if cfg.appearance.theme.is_empty() {
         Ok(None)
     } else {
-        Ok(Some(cfg.theme))
+        Ok(Some(cfg.appearance.theme))
     }
 }
 
@@ -81,7 +139,7 @@ pub fn load_app_config(app: AppHandle) -> Result<Option<String>, String> {
 #[tauri::command]
 pub fn save_app_config(app: AppHandle, theme: String) -> Result<(), String> {
     let mut cfg = read_config(&app)?;
-    cfg.theme = theme;
+    cfg.appearance.theme = theme;
     write_config(&app, &cfg)
 }
 
@@ -89,10 +147,10 @@ pub fn save_app_config(app: AppHandle, theme: String) -> Result<(), String> {
 #[tauri::command]
 pub fn load_app_scheme(app: AppHandle) -> Result<Option<String>, String> {
     let cfg = read_config(&app)?;
-    if cfg.scheme.is_empty() {
+    if cfg.appearance.scheme.is_empty() {
         Ok(None)
     } else {
-        Ok(Some(cfg.scheme))
+        Ok(Some(cfg.appearance.scheme))
     }
 }
 
@@ -100,6 +158,21 @@ pub fn load_app_scheme(app: AppHandle) -> Result<Option<String>, String> {
 #[tauri::command]
 pub fn save_app_scheme(app: AppHandle, scheme: String) -> Result<(), String> {
     let mut cfg = read_config(&app)?;
-    cfg.scheme = scheme;
+    cfg.appearance.scheme = scheme;
+    write_config(&app, &cfg)
+}
+
+/// 读取「启动时检查更新」开关：文件不存在 / 无该字段 → 默认 true
+#[tauri::command]
+pub fn load_check_on_start(app: AppHandle) -> Result<bool, String> {
+    let cfg = read_config(&app)?;
+    Ok(cfg.update.check_on_start)
+}
+
+/// 保存「启动时检查更新」开关，其余配置项保留原值
+#[tauri::command]
+pub fn save_check_on_start(app: AppHandle, check_on_start: bool) -> Result<(), String> {
+    let mut cfg = read_config(&app)?;
+    cfg.update.check_on_start = check_on_start;
     write_config(&app, &cfg)
 }

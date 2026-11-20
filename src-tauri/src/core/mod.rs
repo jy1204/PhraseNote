@@ -9,6 +9,8 @@
 //   export  —— 导出为 zip
 //   saf     —— 安卓 content:// URI 互转
 //   init    —— 首次启动环境初始化 + 基础词 db 迁移（种子 resource → 工作库）
+//   update  —— 冷更新：检查版本 / 日期记账 / 下载安装包 / 拉起安装 / 清理残留
+//   api     —— 外部 API 地址集中存放（GitCode releases/latest 等 URL 常量）
 //
 // 各子模块的导出项由 lib.rs 通过完整路径（crate::core::*::*）引用与注册。
 
@@ -21,4 +23,6 @@ pub mod export;
 pub mod saf;
 pub mod config;
 pub mod init;
+pub mod api;
+pub mod update;
 

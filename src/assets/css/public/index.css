@@ -773,6 +773,17 @@ a:hover {
 .appearance-select {
   width: 220px;
 }
+/* 版本更新：当前版本号与「检查更新」按钮横排靠右 */
+.update-version-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--pn-space-2);
+}
+.update-current-version {
+  font-size: var(--pn-text-base);
+  color: var(--pn-text-sub);
+  white-space: nowrap;
+}
 @media (min-width: 768px) {
   .settings-body { flex-direction: row; }
   .settings-nav {

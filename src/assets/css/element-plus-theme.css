@@ -311,6 +311,11 @@ html.dark {
 .el-overlay {
   background-color: var(--pn-overlay);
 }
+/* 冷更新提示弹窗：从「设置」页点检查更新时，需盖在设置遮罩（10001）之上。
+   el-dialog 遮罩默认 z-index 仅 2000，会被设置窗口压住，这里用专属 modal-class 提层。 */
+.pn-update-overlay.el-overlay {
+  z-index: 10010 !important;
+}
 .el-message-box,
 .el-dialog {
   background-color: var(--pn-bg-elevated);

@@ -197,6 +197,19 @@
                 </el-select>
               </div>
             </div>
+            <div v-if="currentSetting === 'update'">
+              <div class="appearance-row">
+                <span class="appearance-label">当前版本</span>
+                <div class="update-version-actions">
+                  <span class="update-current-version">v{{ appVersion }}</span>
+                  <el-button size="small" @click="checkForUpdate(true)">检查更新</el-button>
+                </div>
+              </div>
+              <div class="appearance-row">
+                <span class="appearance-label">启动时检查更新</span>
+                <el-switch v-model="checkUpdateOnStart" @change="selectCheckOnStart" />
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -269,6 +282,40 @@
     <transition name="pn-editor" appear>
       <NoteEditor v-if="selectedNote" />
     </transition>
+
+    <!-- 冷更新：发现新版本提示弹窗（启动时后端检测，失败静默不弹） -->
+    <el-dialog
+      v-model="updateDialogShow"
+      title="发现新版本"
+      width="min(420px, calc(100vw - 32px))"
+      :close-on-click-modal="false"
+      :close-on-press-escape="false"
+      :show-close="true"
+      class="pn-update-dialog"
+      modal-class="pn-update-overlay"
+      @closed="onUpdateDialogClosed"
+    >
+      <div v-if="!updateDownloading" class="pn-update-info">
+        <div class="pn-update-version">新版本 {{ updateInfo.version }}</div>
+        <div class="pn-update-notes">{{ updateInfo.notes || '暂无更新说明' }}</div>
+      </div>
+      <div v-else class="pn-update-progress">
+        <div class="pn-update-progress-label">
+          {{ updateProgress >= 100 ? '下载完成，正在安装…' : '正在下载安装包…' }}
+        </div>
+        <el-progress :percentage="updateProgress" :stroke-width="14" />
+        <div class="pn-update-progress-actions">
+          <el-button @click="cancelDownload">取消下载</el-button>
+          <el-button type="primary" @click="backgroundDownload">后台下载</el-button>
+        </div>
+      </div>
+      <template #footer>
+        <div v-if="!updateDownloading" class="pn-update-footer">
+          <el-button @click="cancelUpdate">取消</el-button>
+          <el-button type="primary" @click="startUpdate">更新</el-button>
+        </div>
+      </template>
+    </el-dialog>
   </main>
 </template>
 
@@ -279,7 +326,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 // 安卓硬件返回键（Tauri 2.9+ 内置）：监听后系统不再走默认行为，由我们统一分发
-import { onBackButtonPress, exit } from '@tauri-apps/api/app'
+import { onBackButtonPress, exit, getVersion } from '@tauri-apps/api/app'
 // 返回键「可关闭界面」栈：界面打开入栈、关闭出栈，返回键关掉最上面一个
 import { bindBackClosable, consumeBackPress } from './assets/js/backStack.js'
 // Tauri 文件对话框：保存、打开文件
@@ -610,9 +657,10 @@ async function runDupWorker() {
 // -------------------- 设置窗口（外观主题）--------------------
 const settings_show = ref(false)
 const currentSetting = ref('appearance')
-// 第一栏选项：数据驱动，先只放「外观」，以后加「通用 / 关于」等只需往这里加一项
+// 第一栏选项：数据驱动，加「版本更新」等只需往这里加一项
 const settingsOptions = [
   { key: 'appearance', label: '外观' },
+  { key: 'update', label: '版本更新' },
 ]
 const themeOptions = [
   { value: 'system', label: '跟随系统' },
@@ -629,6 +677,9 @@ const schemeOptions = [
   { value: 'dusk', label: '暮霞橙' },
 ]
 const scheme = ref('blue')
+// 版本更新：当前版本号（tauri.conf.json 的 version）+ 启动时检查更新开关（持久化到 config.json）
+const appVersion = ref('')
+const checkUpdateOnStart = ref(true)
 
 async function openSettings() {
   // 打开时回填当前已保存的主题与配色，保证选项高亮正确
@@ -643,6 +694,11 @@ async function openSettings() {
     scheme.value = savedScheme && savedScheme !== '' ? savedScheme : 'blue'
   } catch {
     scheme.value = 'blue'
+  }
+  try {
+    checkUpdateOnStart.value = await invoke('load_check_on_start')
+  } catch {
+    checkUpdateOnStart.value = true
   }
   currentSetting.value = 'appearance'
   settings_show.value = true
@@ -679,6 +735,14 @@ function selectScheme(s: string) {
     console.warn('保存配色失败', e)
   )
 }
+
+// 保存「启动时检查更新」开关到 config.json（update.check_on_start）
+function selectCheckOnStart(v: boolean) {
+  checkUpdateOnStart.value = v
+  invoke('save_check_on_start', { checkOnStart: v }).catch((e: any) =>
+    console.warn('保存检查更新开关失败', e)
+  )
+}
 const importing = ref(false)
 
 // 本次导入真正成功落库的总条数 = 第一阶段 res.imported（短语词条 + 笔记目录/笔记）
@@ -689,6 +753,105 @@ const importSuccessCount = ref(0)
 // 全局初始化遮罩：App 首次渲染即为 true（盖住启动到初始化完成之间的空窗），
 // 由 onMounted 调 ensure_init 完成后置 false 隐藏。
 const init_show = ref(true)
+
+// ====================== 冷更新（启动时后端检测，失败静默）======================
+const updateDialogShow = ref(false)
+const updateInfo = ref<{ version: string; url: string; notes: string; file_name: string }>({
+  version: '', url: '', notes: '', file_name: ''
+})
+const updateDownloading = ref(false)
+const updateProgress = ref(0)
+let updateProgressUnlisten: (() => void) | null = null
+
+// 后台下载：只关弹窗，下载任务在后端继续跑，进度监听保持到完成
+function backgroundDownload() {
+  updateDialogShow.value = false
+}
+
+// 取消（未开始下载时）：等同关弹窗，不再提示（update.json 的日期后端已记，当天不再提示）
+function cancelUpdate() {
+  updateDialogShow.value = false
+}
+
+// 取消下载（正在下载时）：通知后端中断下载并删除半成品安装包，等同「不更新了」
+async function cancelDownload() {
+  updateDownloading.value = false
+  updateProgress.value = 0
+  updateDialogShow.value = false
+  try {
+    await invoke('cancel_update')
+  } catch (e) {
+    console.warn('取消下载失败（已忽略）', e)
+  }
+}
+
+// 弹窗关闭动画结束后复位进度条（下次打开是干净状态）
+function onUpdateDialogClosed() {
+  updateProgress.value = 0
+}
+
+// 更新：订阅进度事件 → 调后端下载（后端下载完自动拉起安装）
+async function startUpdate() {
+  updateDownloading.value = true
+  updateProgress.value = 0
+  try {
+    if (!updateProgressUnlisten) {
+      updateProgressUnlisten = await listen('update-progress', (e: any) => {
+        const p = e.payload?.percent
+        if (typeof p === 'number') updateProgress.value = p
+      })
+    }
+    await invoke('download_update', {
+      url: updateInfo.value.url,
+      fileName: updateInfo.value.file_name
+    })
+  } catch (e: any) {
+    console.error('更新下载失败', e)
+    // 把后端的真实失败原因显示出来（原来是固定文案，无法定位问题）
+    const reason = typeof e === 'string' ? e : (e?.message || String(e ?? ''))
+    ElMessage({
+      message: reason ? `更新失败：${reason}` : '更新失败，请稍后重试',
+      type: 'warning',
+      offset: 50,
+      duration: 5000
+    })
+    updateDownloading.value = false
+    updateDialogShow.value = false
+  }
+}
+
+// 检查更新：后端全权负责（日期记账 / API / 版本比对 / 失败判定），前端只按 status 展示
+// 后端返回 status: available=弹更新框 / up_to_date=已是最新 / error=失败原因 / silent=静默
+// force=true（手动点「检查更新」）绕过「当天已查」记账；启动调用不传，仍按每天一次
+async function checkForUpdate(force = false) {
+  try {
+    const res: any = await invoke('check_update', { force })
+    if (!res) return
+    if (res.status === 'available' && res.info?.version && res.info?.url) {
+      updateInfo.value = {
+        version: res.info.version || '',
+        url: res.info.url || '',
+        notes: res.info.notes || '',
+        file_name: res.info.file_name || ''
+      }
+      updateDownloading.value = false
+      updateProgress.value = 0
+      updateDialogShow.value = true
+    } else if (res.status === 'up_to_date') {
+      ElMessage({ message: res.message || '当前版本为最新版本', type: 'info', offset: 50, duration: 2500 })
+    } else if (res.status === 'error') {
+      ElMessage({ message: res.message || '检查更新失败', type: 'error', offset: 50, duration: 3000 })
+    }
+    // silent：启动检查的无更新/失败情况，什么都不做
+  } catch (e) {
+    // 后端异常也只在手动检查时提示，启动检查静默
+    if (force) {
+      ElMessage({ message: `检查更新失败：${e}`, type: 'error', offset: 50, duration: 3000 })
+    } else {
+      console.warn('检查更新失败（已忽略）', e)
+    }
+  }
+}
 
 // ======================【八、局域网互传：发送文件面板】======================
 const send_file_show = ref(false)
@@ -1118,6 +1281,8 @@ let unlisteners: UnlistenFn[] = []
 let backButtonUnlisten: (() => void) | null = null
 
 onMounted(async () => {
+  // 读取当前版本号供「设置 > 版本更新」展示（失败留空，不影响启动）
+  getVersion().then(v => { appVersion.value = v }).catch(() => {})
   // 启动期全局初始化：弹遮罩 → 跑 ensure_init（建 init.json / 基础词迁移）→ 收遮罩。
   // 即便后端异常也确保遮罩关闭、appReady 置位，避免卡死白屏。
   try {
@@ -1132,14 +1297,36 @@ onMounted(async () => {
     noteDataVersion.value++
   }
 
+  // 冷更新：遵循「启动时检查更新」开关（config.json 的 update.check_on_start）
+  // 遮罩收掉后再异步检查，读配置失败按默认开启处理，失败静默、不阻塞启动
+  try {
+    const enabled = await invoke('load_check_on_start')
+    checkUpdateOnStart.value = enabled
+    if (enabled) void checkForUpdate()
+  } catch {
+    checkUpdateOnStart.value = true
+    void checkForUpdate()
+  }
+
   // 安卓硬件返回键统一入口（桌面端永不触发，注册无副作用）：
-  // 1. 先走「关闭栈」——关掉最上面一个打开中的界面（互传发送/接收、设置、批处理短语，
+  // 1. 先看「冷更新弹窗」——模态，优先级最高：未开始下载 = 取消本次更新；
+  //    正在下载 = 转后台下载（关弹窗，下载继续跑）。
+  // 2. 再走「关闭栈」——关掉最上面一个打开中的界面（互传发送/接收、设置、批处理短语，
   //    以及 PhrasePage 内的添加/修改表单，后开先关）；
-  // 2. 栈空则回退 WebView 历史——笔记编辑器/管理模式各自压过历史记录，
+  // 3. 栈空则回退 WebView 历史——笔记编辑器/管理模式各自压过历史记录，
   //    由 main.js 的 popstate 消费并关闭（沿用原有机制，行为不变）；
-  // 3. 没有历史可退 → 退出应用，与系统默认行为一致。
+  // 4. 没有历史可退 → 退出应用，与系统默认行为一致。
   try {
     const backListener = await onBackButtonPress(async ({ canGoBack }) => {
+      // 冷更新弹窗：按下载状态分派
+      if (updateDialogShow.value) {
+        if (updateDownloading.value) {
+          backgroundDownload() // 正在下载 → 转后台，下载继续
+        } else {
+          cancelUpdate() // 还没下载 → 取消本次更新
+        }
+        return
+      }
       if (consumeBackPress()) return
       if (canGoBack) {
         window.history.back()
@@ -1199,6 +1386,8 @@ onMounted(async () => {
 onUnmounted(() => {
   // 1. 全部取消Tauri事件监听，清理事件订阅
   unlisteners.forEach(fn => fn())
+  // 1b. 取消更新进度监听
+  if (updateProgressUnlisten) updateProgressUnlisten()
   // 2. 注销安卓返回键监听，恢复系统默认行为
   if (backButtonUnlisten) backButtonUnlisten()
   // 3. 兜底：强制关闭接收文件的轮询定时器，防止后台死循环
@@ -1266,5 +1455,91 @@ label {
 }
 a:hover {
   color: var(--pn-primary-deep);
+}
+
+/* 冷更新提示弹窗（el-dialog teleport 到 body，故写在全局段） */
+.pn-update-dialog {
+  /* 手机窄屏：宽度自适应，不超出视口；内容区允许纵向滚动 */
+  max-width: calc(100vw - 32px);
+  margin-top: 12vh;
+}
+.pn-update-dialog .el-dialog__header {
+  padding-right: calc(var(--el-dialog-padding-primary) + var(--el-message-close-size, 16px));
+}
+.pn-update-dialog .el-dialog__header .el-dialog__title {
+  font-weight: 600;
+}
+/* 关闭按钮：触控友好（≥44px），主色描边态 */
+.pn-update-dialog .el-dialog__headerbtn {
+  width: 44px;
+  height: 44px;
+  top: 2px;
+  right: 2px;
+  border-radius: var(--pn-radius-full);
+}
+.pn-update-dialog .el-dialog__headerbtn .el-dialog__close {
+  font-size: 18px;
+  color: var(--pn-text-sub, #888);
+}
+.pn-update-dialog .el-dialog__headerbtn:hover .el-dialog__close,
+.pn-update-dialog .el-dialog__headerbtn:focus-visible .el-dialog__close {
+  color: var(--pn-primary-deep, #409eff);
+}
+.pn-update-info {
+  padding: 4px 0 8px;
+}
+.pn-update-version {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--pn-primary-deep, #409eff);
+  margin-bottom: 10px;
+}
+.pn-update-notes {
+  font-size: 0.9rem;
+  line-height: 1.6;
+  color: var(--pn-text-sub, #888);
+  white-space: pre-wrap;
+  /* 小屏时限制高度，超出可滚动，避免把弹窗顶出屏幕 */
+  max-height: min(180px, 32vh);
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+  -webkit-user-select: text;
+  user-select: text;
+}
+.pn-update-progress {
+  padding: 8px 0 4px;
+}
+.pn-update-progress-label {
+  font-size: 0.9rem;
+  color: var(--pn-text-app);
+  margin-bottom: 12px;
+}
+/* 下载中：「取消下载」在左，「后台下载」在右 */
+.pn-update-progress-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: var(--pn-space-4, 16px);
+}
+.pn-update-progress-actions .el-button {
+  flex: 1 1 0;
+  min-width: 0;
+  margin-left: 0;
+}
+.pn-update-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+/* 手机窄屏：底部按钮等宽铺满，触控区域不小于 44px */
+@media screen and (max-width: 480px) {
+  .pn-update-dialog {
+    margin-top: 8vh;
+    --el-dialog-padding-primary: 16px;
+  }
+  .pn-update-footer .el-button {
+    flex: 1 1 0;
+    min-width: 0;
+    margin-left: 0;
+  }
 }
 </style>

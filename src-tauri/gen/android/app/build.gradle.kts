@@ -66,6 +66,15 @@ android {
     buildFeatures {
         buildConfig = true
     }
+
+    // APK 产物统一命名为 PhraseNote.apk（冷更新配置里写死的下载文件名）
+    // 这样 tauri android build 出来直接就是 PhraseNote.apk，无需构建后手动改名
+    applicationVariants.all {
+        outputs.all {
+            (this as? com.android.build.gradle.api.ApkVariantOutput)?.outputFileName =
+                "PhraseNote.apk"
+        }
+    }
 }
 
 rust {

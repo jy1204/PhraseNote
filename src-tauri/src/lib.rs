@@ -17,8 +17,24 @@ use crate::core::paths::get_subject_dir;
 use crate::core::receive::{ReceiveControl, ReceiveState, ServerHandle, start_http_server};
 use crate::core::send::SendState;
 
+/// 安装 panic hook：安卓 release 是 panic="abort"，崩溃时不会有任何提示。
+/// 这里把 panic 信息打到 stderr（安卓 logcat 能看到 RustStdout/RustStderr 标签），
+/// 便于定位闪退原因；不改变 abort 行为，只补充可读日志。
+fn install_panic_hook() {
+    let prev = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let loc = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "<unknown>".to_string());
+        eprintln!("[panic] {} panicked at {}", info, loc);
+        prev(info);
+    }));
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    install_panic_hook();
     let my_id = uuid::Uuid::new_v4().to_string();
     let my_name = get_device_name();
     println!("[startup] device name = {}", my_name);
@@ -164,7 +180,12 @@ pub fn run() {
             crate::core::config::save_app_config,
             crate::core::config::load_app_scheme,
             crate::core::config::save_app_scheme,
-            crate::core::init::ensure_init
+            crate::core::config::load_check_on_start,
+            crate::core::config::save_check_on_start,
+            crate::core::init::ensure_init,
+            crate::core::update::check_update,
+            crate::core::update::download_update,
+            crate::core::update::cancel_update
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
