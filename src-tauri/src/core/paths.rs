@@ -24,6 +24,42 @@ pub fn get_subject_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(data_dir.join("subject"))
 }
 
+/// 导入用的临时目录（两端统一）：`<subject>/_import_tmp`。
+/// - 桌面：`<exe 目录>/data/subject/_import_tmp`
+/// - 安卓：`app_data_dir/subject/_import_tmp`
+///
+/// 为什么不用系统缓存目录：安卓 `/tmp` 不存在、`temp_dir()` 指向应用无权限的
+/// `/data/local/tmp`；放在 subject 根下既能写，也不落在 english 白名单内
+/// （导出/扫描只遍历 subject/english），残留 db 天然不会被打进备份包。
+/// 目录由调用方用 [`ImportTmpGuard`] 在导入结束时整目录删除。
+pub fn import_tmp_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = get_subject_dir(app)?.join("_import_tmp");
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
+
+/// 导入入口专用：清空上次中断残留后再建「干净」临时目录（每次导入开头调用一次）。
+/// 注意这里不能用 [`import_tmp_dir`] 代替——导入过程中 `import_note_bytes` 也会取同一目录，
+/// 若每次都清空会把本次已写进去的临时文件删掉。
+pub fn reset_import_tmp_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = get_subject_dir(app)?.join("_import_tmp");
+    if dir.exists() {
+        let _ = fs::remove_dir_all(&dir);
+    }
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
+
+/// 导入临时目录的清理守卫：离开作用域（正常返回 / 出错 / 用户取消）时递归删掉整个目录。
+/// 以前是在正常路径末尾逐个 `remove_file`，一旦中途 return 就会留下垃圾文件。
+pub struct ImportTmpGuard(pub PathBuf);
+
+impl Drop for ImportTmpGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
 #[tauri::command]
 pub fn scan_subject_db_files(app: AppHandle) -> Result<Vec<String>, String> {
     let root = get_subject_dir(&app)?;
@@ -48,8 +84,12 @@ fn walk_dir(dir: &Path, out: &mut Vec<String>) -> std::io::Result<()> {
         let entry = entry?;
         let path = entry.path();
         if path.is_dir() {
-            if path.file_name().and_then(|s| s.to_str()) == Some("_received") {
-                continue;
+            if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
+                // `_received`：互传接收目录；`_import_tmp`：导入临时目录（崩溃时会有残留 db，
+                // 不能当成正常备份文件导出）
+                if name == "_received" || name == "_import_tmp" {
+                    continue;
+                }
             }
             walk_dir(&path, out)?;
         } else if path.extension().and_then(|s| s.to_str()) == Some("db") {
@@ -69,6 +109,12 @@ pub fn collect_db_files(
         let entry = entry?;
         let path = entry.path();
         if path.is_dir() {
+            // 跳过互传接收目录与导入临时目录（后者的残留 db 不是用户数据，不能打进备份包）
+            if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
+                if name == "_received" || name == "_import_tmp" {
+                    continue;
+                }
+            }
             collect_db_files(base, &path, out)?;
         } else if path.extension().and_then(|s| s.to_str()) == Some("db") {
             // 相对 subject 的路径，统一用 /

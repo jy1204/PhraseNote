@@ -238,6 +238,37 @@ html.dark {
   border-radius: var(--pn-radius-md);
 }
 
+/* ---------- ElMessage：长文案不再顶出提示框 ----------
+   EP 默认 .el-message { width: max-content; max-width: calc(100% - 32px) }，
+   而内容区是 flex 子项、min-width: auto —— 超长英文（Java 异常串 / 文件路径）
+   算不进收缩宽度，文字就会溢出圆角框被裁掉（安卓更新失败提示实测就是这样）。
+   这里：容器限宽 + 内容区允许任意折行 + 放宽 EP 默认的 line-height: 1；
+   文字颜色改走 --pn-text（深色主题下 EP 的 warning/error 纯色文字对比度太低，
+   浅黄字配奶油底基本看不清），语义色只保留在图标上。 */
+.el-message {
+  max-width: min(560px, calc(100vw - 24px));
+  align-items: flex-start;
+  line-height: 1.5;
+  background-color: var(--pn-bg-elevated);
+  border-color: var(--pn-border-soft);
+  box-shadow: var(--pn-shadow-pop);
+}
+.el-message .el-message__content {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--pn-text);
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+/* 多行时图标/关闭按钮与首行对齐，不跟着文字居中 */
+.el-message .el-message__icon,
+.el-message .el-message__closeBtn {
+  flex: none;
+  margin-top: 3px;
+}
+
 /* 设置窗口内 el-select 下拉需高于设置遮罩（原有 10002 提升保留） */
 .settings-select-popper.el-popper {
   z-index: 10002 !important;

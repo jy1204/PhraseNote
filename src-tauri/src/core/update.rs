@@ -65,6 +65,38 @@ impl UpdateCheckResult {
     }
 }
 
+/// 安装阶段的返回结果（download_update / install_downloaded_update 的返回值）。
+/// - installed：已拉起系统安装器 → 前端直接关弹窗
+/// - need_permission：安装包已下载，但还差「安装未知应用」授权 → 前端留在弹窗里显示
+///   message 的指引，并把主按钮换成「继续安装」（调 install_downloaded_update，不重复下载）
+/// - cancelled：用户在下载过程中取消了 → 前端什么都不用做
+#[derive(Serialize, Clone)]
+pub struct InstallResult {
+    pub status: &'static str,
+    pub message: String,
+}
+
+impl InstallResult {
+    fn installed() -> Self {
+        Self { status: "installed", message: String::new() }
+    }
+    fn cancelled() -> Self {
+        Self { status: "cancelled", message: String::new() }
+    }
+}
+
+impl From<InstallStep> for InstallResult {
+    fn from(step: InstallStep) -> Self {
+        match step {
+            InstallStep::Launched => Self::installed(),
+            InstallStep::NeedPermission(message) => Self {
+                status: "need_permission",
+                message,
+            },
+        }
+    }
+}
+
 /// 下载取消信号：watch 通道，false = 继续下载，true = 中断。
 /// 用 watch 而非 AtomicBool：下载循环 select! 等待它，能在数据块到达之前立刻中断。
 static DOWNLOAD_CANCEL: OnceLock<watch::Sender<bool>> = OnceLock::new();
@@ -242,7 +274,7 @@ pub async fn check_update(app: AppHandle, force: Option<bool>) -> Result<UpdateC
 /// 下载安装包到 update/，经 Tauri event 推进度，完成后自动拉起安装。
 /// 事件名 `update-progress`，payload: { downloaded, total, percent }。
 #[tauri::command]
-pub async fn download_update(app: AppHandle, url: String, file_name: String) -> Result<(), String> {
+pub async fn download_update(app: AppHandle, url: String, file_name: String) -> Result<InstallResult, String> {
     // 安全：文件名只允许固定白名单，拒绝路径穿越
     if file_name != "PhraseNote.exe" && file_name != "PhraseNote.apk" {
         return Err("非法文件名".into());
@@ -373,14 +405,14 @@ pub async fn download_update(app: AppHandle, url: String, file_name: String) -> 
 
     if cancelled {
         let _ = tokio::fs::remove_file(&target).await;
-        return Ok(());
+        return Ok(InstallResult::cancelled());
     }
 
     // 下载完成 → 拉起安装（两端实现分开）
     // 收尾前再查一次取消：避免「刚好在下载结束的瞬间」点了取消仍被拉起安装
     if *cancel_rx.borrow() {
         let _ = tokio::fs::remove_file(&target).await;
-        return Ok(());
+        return Ok(InstallResult::cancelled());
     }
     // 落盘失败（磁盘满 / 权限）→ 直接报错，不拉起安装（否则装的是坏包）
     if let Some(e) = write_err {
@@ -391,14 +423,42 @@ pub async fn download_update(app: AppHandle, url: String, file_name: String) -> 
         "update-progress",
         serde_json::json!({ "downloaded": downloaded, "total": total, "percent": 100 }),
     );
-    launch_install(&app, &target)?;
-    Ok(())
+    // 安装结果原样带回前端：installed = 已拉起安装器（关弹窗）；
+    // need_permission = 还差授权（弹窗留着显示指引 + 「继续安装」按钮）
+    Ok(InstallResult::from(launch_install(&app, &target)?))
+}
+
+/// 重新安装「已经下载好的」安装包（前端「继续安装」按钮调用）。
+///
+/// 用途：安卓上第一次跳设置页授权时，安装包其实已经完整躺在 update/ 里了；
+/// 原来的流程会让用户授权完回来重新点「更新」，于是又白下一遍几十 MB。
+/// 这里直接复用本地文件，只重跑「检查权限 + 拉起安装器」这一段。
+#[tauri::command]
+pub fn install_downloaded_update(app: AppHandle, file_name: String) -> Result<InstallResult, String> {
+    // 与 download_update 同一道白名单：只允许固定文件名，拒绝路径穿越
+    if file_name != "PhraseNote.exe" && file_name != "PhraseNote.apk" {
+        return Err("非法文件名".into());
+    }
+    let root = update_root(&app)?;
+    let target = root.join(UPDATE_DIR).join(&file_name);
+    Ok(InstallResult::from(launch_install(&app, &target)?))
+}
+
+/// 安装阶段的结果。
+/// - Launched：已成功拉起系统安装器（命令最终返回 status = installed）
+/// - NeedPermission：安装包已下载，但缺「安装未知应用」授权。message 是给用户的操作指引，
+///   前端留在更新弹窗里显示，并提供「继续安装」按钮——复用已下载的安装包，不重复下载。
+pub enum InstallStep {
+    Launched,
+    /// 只有安卓的授权分支会构造它；桌面端永远走不到，避免 dead_code 警告
+    #[allow(dead_code)]
+    NeedPermission(String),
 }
 
 /// 拉起系统安装器安装已下载的 APK。
 /// Android 8.0(API 26)+ 需先确认「允许安装未知来源应用」授权，否则启动安装器会静默失败。
 #[cfg(target_os = "android")]
-fn launch_install(_app: &AppHandle, apk: &Path) -> Result<(), String> {
+fn launch_install(_app: &AppHandle, apk: &Path) -> Result<InstallStep, String> {
     // ★ 不要用 app.run_on_main_thread()：
     //   它在安卓上只是把闭包异步派发到 tao event-loop 线程（tao 用 ndk::looper::ThreadLooper
     //   在独立线程跑事件循环，并不是 Android UI 线程），闭包内的错误也无法回传给调用方。
@@ -467,7 +527,7 @@ fn take_pending_exception(env: &mut jni::JNIEnv) -> Option<String> {
 
 /// 在当前（已 attach 的）JNI 线程上执行安装器拉起。
 #[cfg(target_os = "android")]
-fn start_install_activity(apk: &Path) -> Result<(), String> {
+fn start_install_activity(apk: &Path) -> Result<InstallStep, String> {
     use jni::objects::{JObject, JValue};
 
     let ctx = ndk_context::android_context();
@@ -587,10 +647,20 @@ fn start_install_activity(apk: &Path) -> Result<(), String> {
     );
     eprintln!("[update] content:// URI 生成成功");
 
-    // ── Android 8.0(API 26)+：先确认「允许安装未知来源应用」授权 ──
+    // ── Android 8.0(API 26)+：先确认「允许安装未知应用」授权 ──
     //   未授权时直接启动安装器会静默失败（看不到任何界面）。
     //   这里用 PackageManager.canRequestPackageInstalls() 检查，没授权就跳系统设置页，
     //   用户授权后再点一次「更新」即可。
+    //
+    //   ★★ 2026-11-21 第二轮真机实测（用户截图）★★
+    //     这台机器是华为/荣耀系（HarmonyOS/EMUI 风格）：「应用信息」页里权限一栏是灰的
+    //     （"未请求任何权限"），根本没有「安装未知应用」开关，MANAGE_UNKNOWN_APP_SOURCES
+    //     这个 Activity 也不存在。说明它没实现 Android 8+ 的「分应用未知来源」机制 ——
+    //     canRequestPackageInstalls() 于是恒为 false，但它的安装器通常照样能装
+    //     （拦不拦由系统自己决定）。
+    //     所以不能「未授权就拦死」，顺序改成：
+    //       ① 能打开真正的「安装未知应用」设置页 → 引导用户去授权（安装包已下载，回来点继续安装）；
+    //       ② 打不开专用页 → 直接把安装器拉起来，弹窗留着提示「被拦的话去哪里允许」。
     let pm_obj = jni_try!(
         "获取 PackageManager",
         env.call_method(&app_ctx, "getPackageManager", "()Landroid/content/pm/PackageManager;", &[])
@@ -612,75 +682,62 @@ fn start_install_activity(apk: &Path) -> Result<(), String> {
         }
     };
     if !can_install {
-        // 跳到「未知来源应用」设置页：Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES
-        // Intent(action, Uri.parse("package:" + pkgName))
-        let action_manage = jni_try!(
-            "构造设置页 action",
-            env.new_string("android.settings.action.MANAGE_UNKNOWN_APP_SOURCES")
-        );
-        let pkg_uri_str = jni_try!(
-            "构造 package: URI 字符串",
-            env.new_string(&format!("package:{}", pkg_name))
-        );
-        let uri_cls = jni_try!("加载 android/net/Uri", env.find_class("android/net/Uri"));
-        let pkg_uri = jni_try!(
-            "Uri.parse",
-            env.call_static_method(
-                uri_cls,
-                "parse",
-                "(Ljava/lang/String;)Landroid/net/Uri;",
-                &[JValue::Object(&pkg_uri_str)],
-            )
-            .and_then(|v| v.l())
-        );
-        let settings_intent = jni_try!(
-            "构造设置页 Intent",
-            env.new_object(
-                intent_cls,
-                "(Ljava/lang/String;)V",
-                &[JValue::Object(&action_manage)],
-            )
-        );
-        let settings_intent = jni_try!(
-            "设置页 Intent setData",
-            env.call_method(
-                &settings_intent,
-                "setData",
-                "(Landroid/net/Uri;)Landroid/content/Intent;",
-                &[JValue::Object(&pkg_uri)],
-            )
-            .and_then(|v| v.l())
-        );
-        let settings_intent = jni_try!(
-            "设置页 Intent addFlags",
-            env.call_method(
-                &settings_intent,
-                "addFlags",
-                "(I)Landroid/content/Intent;",
-                &[JValue::Int(0x10000000)], // FLAG_ACTIVITY_NEW_TASK
-            )
-            .and_then(|v| v.l())
-        );
-        jni_try!(
-            "跳转系统设置页",
-            env.call_method(
-                &app_ctx,
-                "startActivity",
-                "(Landroid/content/Intent;)V",
-                &[JValue::Object(&settings_intent)]
-            )
-        );
-        return Err("请先在系统设置中允许本应用安装未知来源应用，然后重新点击「更新」".into());
+        match open_install_permission_settings(env, &app_ctx, &intent_cls, &pkg_name) {
+            Ok(opened) => {
+                eprintln!("[update] 已打开「安装未知应用」设置页: {}", opened);
+                // 这里不是失败，只是「还差一步授权」：安装包已完整下载，授权后
+                // 调 install_downloaded_update 直接装，不用重新下载一遍。
+                return Ok(InstallStep::NeedPermission(
+                    "请先允许本应用「安装未知应用」（已为你打开系统设置页）。\
+                     开启后返回本应用，点下面的「继续安装」即可——安装包已经下载好了，不用重新下载。"
+                        .to_string(),
+                ));
+            }
+            Err(settings_err) => {
+                // 没有可用的专用设置页（这台机器就是）：先试安装器，很多 ROM 其实不拦。
+                // 拦了的话系统自己会弹提示，用户按这里给的路径手动允许后再点「继续安装」。
+                eprintln!(
+                    "[update] 打不开「安装未知应用」设置页（{}），改为直接拉起安装器",
+                    settings_err
+                );
+                return match try_launch_installer(env, &app_ctx, &intent_cls, &uri_obj) {
+                    Ok(()) => Ok(InstallStep::NeedPermission(
+                        "安装包已下载好，已尝试打开系统安装界面。\
+                         如果系统提示「不允许安装未知应用」：请到 设置 → 安全 → 更多安全设置 → \
+                         安装外部来源应用（华为/荣耀），或 设置 → 应用与权限 → 安装未知应用\
+                         （vivo/OPPO/小米）里允许本应用，再返回这里点「继续安装」。"
+                            .to_string(),
+                    )),
+                    Err(install_err) => Err(format!(
+                        "无法拉起系统安装器：{}（这台机器也没有可用的「安装未知应用」设置页）。\
+                         安装包已下载到 {}，请把这条信息反馈给开发者。",
+                        install_err,
+                        apk.display()
+                    )),
+                };
+            }
+        }
     }
 
-    // ── 拉起安装器：先 ACTION_INSTALL_PACKAGE，失败降级 ACTION_VIEW ──
-    //   INSTALL_PACKAGE 是 API 26+ 官方推荐；少数机型/ROM 上没有 Activity 认这个
-    //   action（抛 ActivityNotFoundException），这时退回 ACTION_VIEW（旧机型通用）。
+    try_launch_installer(env, &app_ctx, &intent_cls, &uri_obj)?;
+    Ok(InstallStep::Launched)
+}
+
+/// 拉起系统安装器：先 ACTION_INSTALL_PACKAGE（API 26+ 官方推荐），失败降级 ACTION_VIEW。
+///   少数机型/ROM 上没有 Activity 认 INSTALL_PACKAGE 这个 action
+///   （抛 ActivityNotFoundException），ACTION_VIEW 是旧机型/文件管理器通用的那条。
+#[cfg(target_os = "android")]
+fn try_launch_installer(
+    env: &mut jni::JNIEnv,
+    app_ctx: &jni::objects::JObject,
+    intent_cls: &jni::objects::JClass,
+    uri_obj: &jni::objects::JObject,
+) -> Result<(), String> {
     match fire_install_intent(
         env,
-        &app_ctx,
-        &intent_cls,
-        &uri_obj,
+        app_ctx,
+        intent_cls,
+        uri_obj,
         "android.intent.action.INSTALL_PACKAGE",
     ) {
         Ok(()) => {
@@ -691,9 +748,9 @@ fn start_install_activity(apk: &Path) -> Result<(), String> {
             eprintln!("[update] ACTION_INSTALL_PACKAGE 拉起失败：{}", e1);
             match fire_install_intent(
                 env,
-                &app_ctx,
-                &intent_cls,
-                &uri_obj,
+                app_ctx,
+                intent_cls,
+                uri_obj,
                 "android.intent.action.VIEW",
             ) {
                 Ok(()) => {
@@ -707,6 +764,129 @@ fn start_install_activity(apk: &Path) -> Result<(), String> {
             }
         }
     }
+}
+
+/// 「安装未知应用」设置页候选表。
+///
+/// 只保留**真正能授权**的页面，不再拿「应用详情页 / 安全设置 / 设置总入口」凑数：
+/// 实测那几页要么没有开关（应用详情页的权限栏是灰的），要么只是让用户自己找，
+/// 拉起去反而把人绕晕（还会被当成「已打开设置页」骗过授权判定）。
+///
+/// 为什么两个变体都要试：AOSP 的 ManageExternalSources 页面既接受带 `package:` data 的
+/// 调用（直接定位到本应用开关），也接受不带 data 的调用（全局「安装未知应用」列表）。
+/// 但部分 ROM（实测这台华为/荣耀系）只声明了其中一种，带 data 直接
+/// ActivityNotFoundException —— 两个都试才有一半机会拿到可用的页面。
+#[cfg(target_os = "android")]
+const SETTINGS_CANDIDATES: [(&str, bool); 2] = [
+    ("android.settings.action.MANAGE_UNKNOWN_APP_SOURCES", true),
+    ("android.settings.action.MANAGE_UNKNOWN_APP_SOURCES", false),
+];
+
+/// 按候选表逐个尝试打开设置页，返回第一个成功的 action。
+/// 全部失败时把每一步的真实 Java 异常拼起来返回（ActivityNotFoundException = 这台机器没这页面）。
+#[cfg(target_os = "android")]
+fn open_install_permission_settings(
+    env: &mut jni::JNIEnv,
+    app_ctx: &jni::objects::JObject,
+    intent_cls: &jni::objects::JClass,
+    pkg_name: &str,
+) -> Result<&'static str, String> {
+    let mut failures: Vec<String> = Vec::new();
+    for (action, with_pkg) in SETTINGS_CANDIDATES {
+        let data = if with_pkg { Some(pkg_name) } else { None };
+        match start_settings_activity(env, app_ctx, intent_cls, action, data) {
+            Ok(()) => return Ok(action),
+            Err(e) => failures.push(format!("{}：{}", action, e)),
+        }
+    }
+    Err(failures.join("；"))
+}
+
+/// 构造 Intent(action [, data = package:<pkg>]) + FLAG_ACTIVITY_NEW_TASK，然后 startActivity。
+/// 失败时带回真实 Java 异常文本；ActivityNotFoundException 属于「预期内的失败」，
+/// 由 jni_try! 里的 take_pending_exception 负责清除挂起异常，之后能继续试下一个。
+#[cfg(target_os = "android")]
+fn start_settings_activity(
+    env: &mut jni::JNIEnv,
+    app_ctx: &jni::objects::JObject,
+    intent_cls: &jni::objects::JClass,
+    action: &str,
+    pkg_name: Option<&str>,
+) -> Result<(), String> {
+    use jni::objects::JValue;
+
+    macro_rules! jni_try {
+        ($step:literal, $e:expr) => {
+            match $e {
+                Ok(v) => v,
+                Err(e) => {
+                    let detail = take_pending_exception(env).unwrap_or_else(|| e.to_string());
+                    return Err(format!("{}: {}", $step, detail));
+                }
+            }
+        };
+    }
+
+    let action_str = jni_try!("构造 action 字符串", env.new_string(action));
+    let mut intent = jni_try!(
+        "构造设置页 Intent",
+        env.new_object(
+            intent_cls,
+            "(Ljava/lang/String;)V",
+            &[JValue::Object(&action_str)],
+        )
+    );
+
+    // 带包名时 data 用 "package:<pkg>"，让页面直接定位到本应用的开关
+    if let Some(pkg) = pkg_name {
+        let pkg_uri_str = jni_try!(
+            "构造 package: URI 字符串",
+            env.new_string(&format!("package:{}", pkg))
+        );
+        let uri_cls = jni_try!("加载 android/net/Uri", env.find_class("android/net/Uri"));
+        let pkg_uri = jni_try!(
+            "Uri.parse",
+            env.call_static_method(
+                uri_cls,
+                "parse",
+                "(Ljava/lang/String;)Landroid/net/Uri;",
+                &[JValue::Object(&pkg_uri_str)],
+            )
+            .and_then(|v| v.l())
+        );
+        intent = jni_try!(
+            "设置页 Intent setData",
+            env.call_method(
+                &intent,
+                "setData",
+                "(Landroid/net/Uri;)Landroid/content/Intent;",
+                &[JValue::Object(&pkg_uri)],
+            )
+            .and_then(|v| v.l())
+        );
+    }
+
+    // Application Context 上 startActivity 必须带 FLAG_ACTIVITY_NEW_TASK
+    let intent = jni_try!(
+        "设置页 Intent addFlags",
+        env.call_method(
+            &intent,
+            "addFlags",
+            "(I)Landroid/content/Intent;",
+            &[JValue::Int(0x10000000)],
+        )
+        .and_then(|v| v.l())
+    );
+    jni_try!(
+        "startActivity",
+        env.call_method(
+            app_ctx,
+            "startActivity",
+            "(Landroid/content/Intent;)V",
+            &[JValue::Object(&intent)]
+        )
+    );
+    Ok(())
 }
 
 /// 用指定 action 构造安装 Intent 并 startActivity。
@@ -794,7 +974,7 @@ fn clear_pending_exception(env: &mut jni::JNIEnv) -> Result<(), String> {
 }
 
 #[cfg(not(target_os = "android"))]
-fn launch_install(_app: &AppHandle, installer: &Path) -> Result<(), String> {
+fn launch_install(_app: &AppHandle, installer: &Path) -> Result<InstallStep, String> {
     // 弹安装界面（非静默），关掉运行中的旧 exe（删 A）、避免装完双开（保留 B 的 postinstall 拉起）
     std::process::Command::new(installer)
         .args([
@@ -803,5 +983,5 @@ fn launch_install(_app: &AppHandle, installer: &Path) -> Result<(), String> {
         ])
         .spawn()
         .map_err(|e| format!("启动安装程序失败: {}", e))?;
-    Ok(())
+    Ok(InstallStep::Launched)
 }

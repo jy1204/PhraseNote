@@ -11,11 +11,14 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, State};
 use uuid;
 use zip::ZipArchive;
 
-use crate::core::paths::{device_dir_of, get_subject_dir, module_of_file, EXPORTABLE_DIRS};
+use crate::core::paths::{
+    device_dir_of, get_subject_dir, module_of_file, reset_import_tmp_dir, ImportTmpGuard,
+    EXPORTABLE_DIRS,
+};
 use crate::core::receive::{ReceivedFile, ReceiveState};
 #[cfg(target_os = "android")]
 use crate::core::saf::content_uri_to_cache;
@@ -58,10 +61,16 @@ pub async fn import_subject_zip(
     // 更改变量为false
     cancel.store(false, Ordering::SeqCst);
 
-    // ★ 安卓 SAF：open() 返回的是 content:// URI，先拷到应用缓存变成真实路径
+    // 导入临时目录：subject/_import_tmp
+    // （桌面 = exe 旁 data/subject/_import_tmp，安卓 = app_data_dir/subject/_import_tmp）。
+    // 函数结束（含出错 / 取消）时由 guard 递归删除整个目录。
+    let tmp_root = reset_import_tmp_dir(&app)?;
+    let _tmp_guard = ImportTmpGuard(tmp_root.clone());
+
+    // ★ 安卓 SAF：open() 返回的是 content:// URI，先拷到临时目录变成真实路径
     #[cfg(target_os = "android")]
     let zip_path = if zip_path.starts_with("content://") {
-        content_uri_to_cache(&app, &zip_path, "import_tmp.zip")?
+        content_uri_to_cache(&app, &zip_path, "import_tmp.zip", &tmp_root)?
             .to_string_lossy()
             .into_owned()
     } else {
@@ -74,10 +83,6 @@ pub async fn import_subject_zip(
     // 先把所有条目读进内存（db 文件很小），便于按 manifest 派发到不同导入函数
     let mut entries: HashMap<String, Vec<u8>> = HashMap::new();
     let mut manifest_bytes: Option<Vec<u8>> = None;
-
-    // ★ 安卓上 /tmp 不存在且不可写，统一改用应用缓存目录
-    let tmp_root = app.path().app_cache_dir().map_err(|e| e.to_string())?;
-    fs::create_dir_all(&tmp_root).map_err(|e| e.to_string())?;
 
     for i in 0..archive.len() {
         if cancel.load(Ordering::SeqCst) {
@@ -203,16 +208,6 @@ pub async fn import_subject_zip(
             &mut skipped,
             &mut duplicates,
         )?;
-    }
-
-    // 清理导入时落在缓存里的临时 zip
-    #[cfg(target_os = "android")]
-    {
-        let cache = app.path().app_cache_dir().map_err(|e| e.to_string())?;
-        let tmp_zip = cache.join("import_tmp.zip");
-        if tmp_zip.exists() {
-            let _ = fs::remove_file(&tmp_zip);
-        }
     }
 
     Ok(serde_json::json!({
@@ -504,10 +499,10 @@ pub async fn import_received_files(
     let cancel = import_state.cancel.clone();
     cancel.store(false, Ordering::SeqCst);
 
-    // 临时目录（安卓上 /tmp 不可写，统一用应用缓存目录），供 merge_phrase_sources 落地源 db 临时文件；
-    // 合并结果不再落盘，直接以内存行交给 import_phrase_rows
-    let tmp_root = app.path().app_cache_dir().map_err(|e| e.to_string())?;
-    fs::create_dir_all(&tmp_root).map_err(|e| e.to_string())?;
+    // 临时目录：subject/_import_tmp，供 merge_phrase_sources 落地源 db 临时文件；
+    // 合并结果不再落盘，直接以内存行交给 import_phrase_rows。函数结束时整目录删除。
+    let tmp_root = reset_import_tmp_dir(&app)?;
+    let _tmp_guard = ImportTmpGuard(tmp_root.clone());
 
     // 短语库统一并入主 phrase_db，按其在 subject 下的标准相对路径推导
     // （供 import_phrase_rows 的 zip-slip 校验与 duplicates.source_file 展示）

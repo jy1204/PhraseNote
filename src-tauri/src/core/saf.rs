@@ -9,12 +9,14 @@ use std::path::{Path, PathBuf};
 #[cfg(target_os = "android")]
 use tauri::AppHandle;
 
-/// 把 content:// URI 指向的文件拷到应用缓存目录，返回本地真实路径（导入用）
+/// 把 content:// URI 指向的文件拷到指定目录（导入用，目录由调用方提供：
+/// `<subject>/_import_tmp`），返回本地真实路径
 #[cfg(target_os = "android")]
 pub fn content_uri_to_cache(
     _app: &AppHandle,
     uri: &str,
     filename: &str,
+    dir: &Path,
 ) -> Result<PathBuf, String> {
     use jni::objects::{JObject, JValue};
 
@@ -64,24 +66,9 @@ pub fn content_uri_to_cache(
         .l()
         .map_err(|e| e.to_string())?;
 
-    // 缓存目录 = activity.getCacheDir().getAbsolutePath()
-    let cache_file = env
-        .call_method(&activity, "getCacheDir", "()Ljava/io/File;", &[])
-        .map_err(|e| e.to_string())?
-        .l()
-        .map_err(|e| e.to_string())?;
-    let jpath = env
-        .call_method(&cache_file, "getAbsolutePath", "()Ljava/lang/String;", &[])
-        .map_err(|e| e.to_string())?
-        .l()
-        .map_err(|e| e.to_string())?;
-    let cache_path: String = env
-        .get_string((&jpath).into())
-        .map_err(|e| e.to_string())?
-        .to_string_lossy()
-        .into();
-
-    let target = PathBuf::from(cache_path).join(filename);
+    // 目标目录由调用方给出（subject/_import_tmp），不再用 activity.getCacheDir()
+    fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let target = dir.join(filename);
     let mut out = fs::File::create(&target).map_err(|e| e.to_string())?;
 
     // 循环 stream.read(byte[65536]) 写入本地文件

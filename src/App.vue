@@ -298,10 +298,14 @@
       <div v-if="!updateDownloading" class="pn-update-info">
         <div class="pn-update-version">新版本 {{ updateInfo.version }}</div>
         <div class="pn-update-notes">{{ updateInfo.notes || '暂无更新说明' }}</div>
+        <!-- 安装阶段的问题就在弹窗里说清楚：长文案（系统异常串 / 安装包路径）会正常换行，
+             不再塞进一行 toast 把提示框撑爆 -->
+        <div v-if="updateError" class="pn-update-alert pn-update-alert--error">{{ updateError }}</div>
+        <div v-else-if="updatePermissionTip" class="pn-update-alert">{{ updatePermissionTip }}</div>
       </div>
       <div v-else class="pn-update-progress">
         <div class="pn-update-progress-label">
-          {{ updateProgress >= 100 ? '下载完成，正在安装…' : '正在下载安装包…' }}
+          {{ updateProgress >= 100 ? (updateNeedPermission ? '准备安装…' : '下载完成，正在安装…') : '正在下载安装包…' }}
         </div>
         <el-progress :percentage="updateProgress" :stroke-width="14" />
         <div class="pn-update-progress-actions">
@@ -311,8 +315,11 @@
       </div>
       <template #footer>
         <div v-if="!updateDownloading" class="pn-update-footer">
-          <el-button @click="cancelUpdate">取消</el-button>
-          <el-button type="primary" @click="startUpdate">更新</el-button>
+          <el-button @click="cancelUpdate">{{ updateError || updateNeedPermission ? '关闭' : '取消' }}</el-button>
+          <!-- 还差「安装未知应用」授权：安装包已经在本地，直接复用，不重新下载 -->
+          <el-button v-if="updateNeedPermission" type="primary" @click="installPending">继续安装</el-button>
+          <el-button v-else-if="updateError" type="primary" @click="startUpdate">重试</el-button>
+          <el-button v-else type="primary" @click="startUpdate">更新</el-button>
         </div>
       </template>
     </el-dialog>
@@ -761,7 +768,34 @@ const updateInfo = ref<{ version: string; url: string; notes: string; file_name:
 })
 const updateDownloading = ref(false)
 const updateProgress = ref(0)
+// 安装阶段的两类反馈（都放在弹窗里，不再用 toast——长文案会把一行提示框撑爆）：
+//   updateError：真失败（下载失败 / 拉不起安装器），可点「重试」重新下载
+//   updateNeedPermission + updatePermissionTip：安装包已下载，只差「安装未知应用」授权，
+//     授权后点「继续安装」复用本地安装包（后端 install_downloaded_update），不重新下载
+const updateError = ref('')
+const updateNeedPermission = ref(false)
+const updatePermissionTip = ref('')
 let updateProgressUnlisten: (() => void) | null = null
+
+// 每次重新开始（下载 / 继续安装）前先清掉上一条反馈，避免旧文案串场
+function resetUpdateFeedback() {
+  updateError.value = ''
+  updateNeedPermission.value = false
+  updatePermissionTip.value = ''
+}
+
+// 后端安装结果的统一落地：need_permission = 留在弹窗里给指引，其余（installed / cancelled）关弹窗
+function applyInstallResult(res: any) {
+  if (res?.status === 'need_permission') {
+    updateNeedPermission.value = true
+    updatePermissionTip.value =
+      res.message ||
+      '请先在系统设置中允许本应用「安装未知应用」，然后返回这里点「继续安装」。'
+    updateProgress.value = 100
+    return
+  }
+  updateDialogShow.value = false
+}
 
 // 后台下载：只关弹窗，下载任务在后端继续跑，进度监听保持到完成
 function backgroundDownload() {
@@ -785,15 +819,17 @@ async function cancelDownload() {
   }
 }
 
-// 弹窗关闭动画结束后复位进度条（下次打开是干净状态）
+// 弹窗关闭动画结束后复位（下次打开是干净状态）
 function onUpdateDialogClosed() {
   updateProgress.value = 0
+  resetUpdateFeedback()
 }
 
 // 更新：订阅进度事件 → 调后端下载（后端下载完自动拉起安装）
 async function startUpdate() {
   updateDownloading.value = true
   updateProgress.value = 0
+  resetUpdateFeedback()
   try {
     if (!updateProgressUnlisten) {
       updateProgressUnlisten = await listen('update-progress', (e: any) => {
@@ -801,22 +837,39 @@ async function startUpdate() {
         if (typeof p === 'number') updateProgress.value = p
       })
     }
-    await invoke('download_update', {
+    const res: any = await invoke('download_update', {
       url: updateInfo.value.url,
       fileName: updateInfo.value.file_name
     })
+    applyInstallResult(res)
   } catch (e: any) {
-    console.error('更新下载失败', e)
-    // 把后端的真实失败原因显示出来（原来是固定文案，无法定位问题）
+    console.error('更新失败', e)
+    // 后端的真实失败原因直接显示在弹窗里（原来是固定文案 + 一行 toast）
     const reason = typeof e === 'string' ? e : (e?.message || String(e ?? ''))
-    ElMessage({
-      message: reason ? `更新失败：${reason}` : '更新失败，请稍后重试',
-      type: 'warning',
-      offset: 50,
-      duration: 5000
-    })
+    updateError.value = reason || '更新失败，请稍后重试'
+    updateProgress.value = 0
+  } finally {
     updateDownloading.value = false
-    updateDialogShow.value = false
+  }
+}
+
+// 「继续安装」：安装包已下载好，只是缺「安装未知应用」授权。
+// 走 install_downloaded_update 复用本地文件，避免授权完回来又白下一遍几十 MB。
+async function installPending() {
+  updateDownloading.value = true
+  updateError.value = ''
+  updateProgress.value = 100
+  try {
+    const res: any = await invoke('install_downloaded_update', {
+      fileName: updateInfo.value.file_name
+    })
+    applyInstallResult(res)
+  } catch (e: any) {
+    console.error('继续安装失败', e)
+    const reason = typeof e === 'string' ? e : (e?.message || String(e ?? ''))
+    updateError.value = reason || '安装失败，请稍后重试'
+  } finally {
+    updateDownloading.value = false
   }
 }
 
@@ -836,6 +889,7 @@ async function checkForUpdate(force = false) {
       }
       updateDownloading.value = false
       updateProgress.value = 0
+      resetUpdateFeedback()
       updateDialogShow.value = true
     } else if (res.status === 'up_to_date') {
       ElMessage({ message: res.message || '当前版本为最新版本', type: 'info', offset: 50, duration: 2500 })
@@ -1505,6 +1559,30 @@ a:hover {
   overflow-wrap: anywhere;
   -webkit-user-select: text;
   user-select: text;
+}
+/* 安装阶段提示块：默认走主题色（授权指引），--error 为失败红；
+   长文案正常折行、内部可滚动，绝不顶出弹窗——原来这类原因只塞进一行 toast，
+   超长英文（Java 异常串、安装包路径）会把提示框撑爆 */
+.pn-update-alert {
+  margin-top: var(--pn-space-3, 12px);
+  padding: 10px 12px;
+  max-height: min(180px, 28vh);
+  overflow-y: auto;
+  border-radius: var(--pn-radius-md, 8px);
+  border: 1px solid var(--pn-border-soft, rgba(127, 127, 127, 0.3));
+  background-color: var(--pn-bg-inset, rgba(127, 127, 127, 0.08));
+  color: var(--pn-text-app);
+  font-size: 0.86rem;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  -webkit-user-select: text;
+  user-select: text;
+}
+.pn-update-alert--error {
+  border-color: var(--pn-danger, #d63b5c);
+  color: var(--pn-danger, #d63b5c);
 }
 .pn-update-progress {
   padding: 8px 0 4px;

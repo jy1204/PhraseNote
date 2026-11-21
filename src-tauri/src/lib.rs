@@ -185,6 +185,7 @@ pub fn run() {
             crate::core::init::ensure_init,
             crate::core::update::check_update,
             crate::core::update::download_update,
+            crate::core::update::install_downloaded_update,
             crate::core::update::cancel_update
         ])
         .build(tauri::generate_context!())

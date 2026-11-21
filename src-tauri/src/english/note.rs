@@ -36,7 +36,6 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use serde_json;
-use tauri::Manager;
 use uuid::Uuid;
 
 /// 🖥️桌面端Windows：exe所在目录 → ./data/subject/english/note_db.db
@@ -427,9 +426,9 @@ pub fn import_note_bytes(
     imported: &mut i64,
     skipped: &mut i64,
 ) -> Result<(), String> {
-    let cache = app.path().app_cache_dir().map_err(|e| e.to_string())?;
-    fs::create_dir_all(&cache).map_err(|e| e.to_string())?;
-    let tmp = cache.join(format!("note_import_{}.db", Uuid::new_v4().simple()));
+    // 临时库放到导入临时目录（subject/_import_tmp），由导入流程的 guard 统一清理
+    let tmp_dir = crate::core::paths::import_tmp_dir(app)?;
+    let tmp = tmp_dir.join(format!("note_import_{}.db", Uuid::new_v4().simple()));
     fs::write(&tmp, bytes).map_err(|e| e.to_string())?;
 
     let src = Connection::open(&tmp).map_err(|e| e.to_string())?;
