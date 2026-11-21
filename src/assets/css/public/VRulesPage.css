@@ -1,0 +1,903 @@
+/* ============================================================
+   VRulesPage 页面样式（发音规则）
+   内容整合自《语音总结》1–18 页；由 tmp_ui_test/pronunciation-rule-ui.html 原型接入。
+   视觉风格对齐 PhrasePage：左侧纯圆形字母轨 + 顶部搜索框 + 大圆角卡片 + pill 条目。
+   颜色统一引用 public/index.css 的 --pn-* 主题变量，深浅色自动切换。
+   所有选择器带 .vrules-page 前缀，避免污染全局。
+   ============================================================ */
+
+/* ---------- 单根包装：承接 .main-board 直接子级的 flex:1 语义 ---------- */
+.vrules-page {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+.vrules-page .vrules-panel {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+
+/* ---------- 左侧纯圆形导航轨（对齐 PhrasePage .type） ----------
+   chip 44px + 左右各 18px 给激活辉光留扩散空间，不被裁剪边界硬切。 */
+.vrules-page .vrules-type {
+  display: inline-block;
+  flex: 0 0 auto;
+  width: calc(var(--pn-touch-min) + 2 * 18px);
+  height: 100%;
+  overflow-y: scroll;
+  padding: var(--pn-space-2) 18px;
+}
+.vrules-page .vrules-type::-webkit-scrollbar { display: none; }
+.vrules-page .vrules-type ol {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--pn-space-1);
+}
+.vrules-page .vrules-type ol li {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--pn-touch-min);
+  height: var(--pn-touch-min);
+  border-radius: var(--pn-radius-full);
+  background-color: var(--pn-bg-hover);
+  color: var(--pn-text-sub);
+  font-size: var(--pn-text-md);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color var(--pn-duration-fast) var(--pn-ease-standard),
+              color var(--pn-duration-fast) var(--pn-ease-standard),
+              transform var(--pn-duration-fast) var(--pn-ease-bounce),
+              box-shadow var(--pn-duration-fast) var(--pn-ease-standard);
+}
+.vrules-page .vrules-type ol li:hover {
+  background-color: var(--pn-primary-soft-strong);
+  color: var(--pn-primary-deep);
+  transform: translateY(-2px);
+}
+.vrules-page .vrules-type ol li:active { transform: scale(0.92); }
+.vrules-page .vrules-type ol li.active {
+  background-color: var(--pn-primary);
+  color: var(--pn-primary-contrast);
+  box-shadow: var(--pn-glow-fab);
+}
+/* 分组：两字标题 + 该组的圆形按钮列；组间用细线区隔 */
+.vrules-page .vrules-type .track-group {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--pn-space-1);
+}
+.vrules-page .vrules-type .track-group + .track-group {
+  margin-top: var(--pn-space-3);
+  padding-top: var(--pn-space-3);
+  border-top: 1px solid var(--pn-border-soft);
+}
+.vrules-page .vrules-type .track-group-title {
+  font-size: var(--pn-text-xs);
+  font-weight: 700;
+  letter-spacing: .08em;
+  color: var(--pn-text-muted);
+  line-height: 1.2;
+  margin-bottom: 2px;
+}
+
+/* ---------- 右侧内容区：搜索框 + 滚动卡片列表 ---------- */
+.vrules-page .vrules-knowledge {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  padding: var(--pn-space-2) var(--pn-space-3) var(--pn-space-2) 0;
+}
+/* 搜索框与下方滚动内容之间固定留 12px 呼吸位 */
+.vrules-page .vrules-search { position: relative; z-index: 6; flex: 0 0 auto; margin-bottom: 12px; }
+/* offsetTop 基准：scrollspy 依赖 section.offsetTop 相对本容器。
+   不写 scroll-behavior:smooth —— 搜索回顶需瞬时完成，否则回顶动画会让左轨乱跳；
+   点击锚点的平滑滚动由 JS 显式 scrollTo({behavior:'smooth'}) 指定。 */
+.vrules-page .vrules-scroll {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+}
+.vrules-page .vrules-scroll::-webkit-scrollbar { display: none; }
+
+/* ============================================================
+   VRulesPage 页面样式（发音规则）
+   内容整合自《语音总结》1–18 页；由 tmp_ui_test/pronunciation-rule-ui.html 原型接入。
+   颜色统一引用 public/index.css 的 --pn-* 主题变量，深浅色自动切换。
+   所有选择器带 .vrules-page 前缀，避免污染全局；原型自带的假外壳/菜单栏已剥离。
+   ============================================================ */
+
+.vrules-page {
+
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.vrules-page .group-head {
+
+display:flex;align-items:center;gap:var(--pn-space-3);margin:var(--pn-space-6) 0 var(--pn-space-4);
+  padding:0 0 var(--pn-space-3);border-bottom:2px solid var(--pn-primary-soft);}
+.vrules-page .group-head .bar {
+
+flex:0 0 auto;width:5px;height:26px;border-radius:4px;background-image:var(--pn-btn-grad);}
+.vrules-page .group-head h2 {
+
+font-family:var(--pn-font-display);font-size:var(--pn-text-xl);font-weight:400;color:var(--pn-text-strong);}
+.vrules-page .group-head .en {
+
+font-size:var(--pn-text-xs);color:var(--pn-text-faint);letter-spacing:.08em;text-transform:uppercase;}
+.vrules-page .group-head .cnt {
+
+margin-left:auto;padding:3px 12px;border-radius:var(--pn-radius-full);
+  background:var(--pn-bg-tag);color:var(--pn-text-sub);font-size:var(--pn-text-xs);font-weight:600;}
+.vrules-page .ltr, .vrules-page .chapter {
+
+scroll-margin-top:var(--pn-space-3);}
+
+.vrules-page .chapter {
+
+margin-bottom:var(--pn-space-6);}
+.vrules-page .chapter-head {
+
+display:flex;align-items:center;gap:var(--pn-space-3);margin-bottom:var(--pn-space-3);
+  padding-bottom:var(--pn-space-2);border-bottom:2px solid var(--pn-primary-soft);}
+.vrules-page .chapter-head .idx {
+
+display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;
+  width:34px;height:34px;border-radius:var(--pn-radius-md);background-image:var(--pn-btn-grad);
+  color:#fff;font-family:var(--pn-font-display);font-size:var(--pn-text-md);}
+.vrules-page .chapter-head h2 {
+
+font-family:var(--pn-font-display);font-size:var(--pn-text-lg);
+  font-weight:400;color:var(--pn-text-strong);}
+.vrules-page .chapter-head .cnt {
+
+margin-left:auto;padding:3px 12px;border-radius:var(--pn-radius-full);
+  background:var(--pn-bg-tag);color:var(--pn-text-sub);font-size:var(--pn-text-xs);font-weight:600;}
+.vrules-page .concept {
+
+display:flex;align-items:flex-start;gap:var(--pn-space-3);margin-bottom:var(--pn-space-4);
+  padding:var(--pn-space-3) var(--pn-space-4);border:1px solid var(--pn-primary-soft-strong);
+  border-radius:var(--pn-radius-lg);background:var(--pn-primary-soft);}
+.vrules-page .concept .ico {
+
+flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;
+  width:28px;height:28px;border-radius:var(--pn-radius-sm);background:var(--pn-primary);
+  color:var(--pn-primary-contrast);font-size:15px;font-weight:700;}
+.vrules-page .concept p {
+
+font-size:var(--pn-text-base);line-height:1.7;color:var(--pn-text);}
+.vrules-page .concept b {
+
+font-weight:700;color:var(--pn-primary-deep);}
+.vrules-page .concept .word {
+
+display:inline-block;padding:1px 8px;margin:2px 3px 0 0;border-radius:var(--pn-radius-sm);
+  background:var(--pn-bg-card);color:var(--pn-text-strong);font-weight:600;font-size:var(--pn-text-sm);}
+.vrules-page .topic {
+
+margin-bottom:var(--pn-space-5);}
+.vrules-page .topic-hd {
+
+display:flex;align-items:center;gap:var(--pn-space-3);margin-bottom:var(--pn-space-3);
+  padding-left:var(--pn-space-3);border-left:4px solid var(--pn-primary);border-radius:2px;}
+.vrules-page .topic-hd .tno {
+
+font-family:var(--pn-font-display);font-size:var(--pn-text-2xl);
+  color:var(--pn-primary);line-height:1;}
+.vrules-page .topic-hd h3 {
+
+font-family:var(--pn-font-display);font-size:var(--pn-text-xl);font-weight:400;
+  color:var(--pn-text-strong);}
+.vrules-page .topic-hd .kind {
+
+margin-left:auto;padding:3px 12px;border-radius:var(--pn-radius-full);
+  background:var(--pn-primary-soft);color:var(--pn-primary-deep);
+  font-size:var(--pn-text-xs);font-weight:700;letter-spacing:.04em;}
+.vrules-page .box {
+
+border:1px solid var(--pn-border-soft);border-radius:var(--pn-radius-lg);
+  background:var(--pn-bg-card);box-shadow:var(--pn-shadow-sm);overflow:hidden;}
+.vrules-page .box+.box {
+
+margin-top:var(--pn-space-4);}
+.vrules-page .box-hd {
+
+display:flex;align-items:center;gap:var(--pn-space-2);
+  padding:var(--pn-space-2) var(--pn-space-4);background:var(--pn-bg-inset);
+  border-bottom:1px solid var(--pn-border-soft);
+  font-size:var(--pn-text-xs);font-weight:700;letter-spacing:.06em;color:var(--pn-text-sub);}
+.vrules-page .box-hd .dot {
+
+width:6px;height:6px;border-radius:50%;background:var(--pn-primary);}
+.vrules-page .box-bd {
+
+padding:var(--pn-space-2) var(--pn-space-4) var(--pn-space-4);}
+.vrules-page .ct {
+
+width:100%;border-collapse:collapse;font-size:var(--pn-text-base);}
+.vrules-page .ct th, .vrules-page .ct td {
+
+padding:9px 10px;text-align:left;border-bottom:1px solid var(--pn-border-soft);}
+.vrules-page .ct thead th {
+
+font-size:var(--pn-text-sm);font-weight:700;border-bottom:2px solid var(--pn-primary-soft);}
+.vrules-page .ct thead th.k {
+
+width:74px;color:var(--pn-text-muted);font-weight:600;}
+.vrules-page .ct thead th.strong {
+
+color:var(--pn-primary-deep);}
+.vrules-page .ct thead th.weak {
+
+color:var(--pn-text-sub);}
+.vrules-page .ct tbody th.k {
+
+width:74px;font-weight:600;color:var(--pn-text-muted);font-size:var(--pn-text-sm);}
+.vrules-page .ct tbody td.strong {
+
+color:var(--pn-text-strong);font-weight:700;}
+.vrules-page .ct tbody td.weak {
+
+color:var(--pn-text-sub);}
+.vrules-page .ct tbody tr:last-child th, .vrules-page .ct tbody tr:last-child td {
+
+border-bottom:none;}
+.vrules-page .ct .mark {
+
+display:inline-flex;align-items:center;justify-content:center;min-width:24px;height:24px;
+  border-radius:var(--pn-radius-sm);background:var(--pn-primary-soft-strong);
+  color:var(--pn-primary-deep);font-weight:700;}
+.vrules-page .ct-eg {
+
+margin-top:var(--pn-space-3);padding:var(--pn-space-3);border-radius:var(--pn-radius-md);
+  background:var(--pn-primary-soft);}
+.vrules-page .ct-eg .cap {
+
+font-size:var(--pn-text-xs);font-weight:700;color:var(--pn-primary-deep);margin-bottom:6px;}
+.vrules-page .ct-eg .w {
+
+display:inline-block;margin:0 10px 4px 0;font-size:var(--pn-text-sm);font-weight:700;color:var(--pn-text-strong);}
+.vrules-page .ct-eg .w i {
+
+font-style:normal;font-weight:400;color:var(--pn-text-faint);font-size:11px;margin-left:3px;}
+.vrules-page .defrow {
+
+display:flex;align-items:baseline;gap:var(--pn-space-2);
+  padding:var(--pn-space-2) var(--pn-space-3);border-radius:var(--pn-radius-md);
+  background:var(--pn-primary-soft);border-left:3px solid var(--pn-primary);}
+.vrules-page .defrow .n {
+
+font-family:var(--pn-font-display);font-size:var(--pn-text-md);color:var(--pn-primary);}
+.vrules-page .defrow b {
+
+font-size:var(--pn-text-md);color:var(--pn-text-strong);}
+.vrules-page .defrow span.t {
+
+font-size:var(--pn-text-sm);color:var(--pn-text-sub);}
+.vrules-page .tree {
+
+position:relative;margin:var(--pn-space-3) 0 0 var(--pn-space-3);
+  padding-left:var(--pn-space-5);}
+.vrules-page .tree::before {
+
+content:"";position:absolute;left:6px;top:0;bottom:22px;
+  width:2px;background:var(--pn-border-strong);border-radius:2px;}
+.vrules-page .syl {
+
+position:relative;padding:var(--pn-space-3) var(--pn-space-4);border-radius:var(--pn-radius-md);
+  background:var(--pn-bg-inset);border:1px solid var(--pn-border-soft);}
+.vrules-page .syl+.syl {
+
+margin-top:var(--pn-space-2);}
+.vrules-page .syl::before {
+
+content:"";position:absolute;left:calc(-1 * var(--pn-space-5) + 6px);top:22px;
+  width:calc(var(--pn-space-5) - 6px);height:2px;background:var(--pn-border-strong);}
+.vrules-page .syl::after {
+
+content:"";position:absolute;left:calc(-1 * var(--pn-space-5) + 4px);top:18px;
+  width:8px;height:8px;border-radius:50%;background:var(--pn-primary);
+  box-shadow:0 0 0 3px var(--pn-bg-card);}
+.vrules-page .syl .syl-hd {
+
+display:flex;align-items:center;gap:8px;margin-bottom:var(--pn-space-2);}
+.vrules-page .syl .syl-hd .tag {
+
+font-family:var(--pn-font-display);font-size:var(--pn-text-xs);
+  padding:1px 8px;border-radius:var(--pn-radius-full);background:var(--pn-primary);
+  color:var(--pn-primary-contrast);}
+.vrules-page .syl h4 {
+
+font-size:var(--pn-text-md);font-weight:700;color:var(--pn-text-strong);}
+.vrules-page .formula {
+
+display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin-bottom:6px;}
+.vrules-page .unit {
+
+display:inline-flex;align-items:center;justify-content:center;min-width:34px;height:28px;padding:0 9px;
+  border-radius:var(--pn-radius-sm);font-size:var(--pn-text-sm);font-weight:700;}
+.vrules-page .u-v {
+
+background:var(--pn-lemon-soft);color:#9A6A00;}
+.vrules-page .u-c {
+
+background:var(--pn-mint-soft);color:#0E8A66;}
+.vrules-page .u-s {
+
+background:var(--pn-bg-tag);color:var(--pn-text-muted);}
+.vrules-page .op {
+
+color:var(--pn-text-faint);font-size:var(--pn-text-sm);}
+.vrules-page .syl p {
+
+font-size:var(--pn-text-sm);color:var(--pn-text-sub);line-height:1.6;}
+.vrules-page .syl .egs {
+
+margin-top:6px;display:flex;flex-wrap:wrap;gap:5px 8px;align-items:center;}
+.vrules-page .syl .egs .lead {
+
+font-size:11px;color:var(--pn-text-faint);}
+.vrules-page .syl .egs .w {
+
+font-size:var(--pn-text-sm);font-weight:700;color:var(--pn-text-strong);}
+.vrules-page .note-sup {
+
+display:flex;align-items:flex-start;gap:var(--pn-space-3);margin-top:var(--pn-space-4);
+  padding:var(--pn-space-2) var(--pn-space-4);border-radius:var(--pn-radius-md);
+  border:1px dashed var(--pn-border-strong);background:transparent;}
+.vrules-page .note-sup .tag {
+
+flex:0 0 auto;padding:2px 9px;border-radius:var(--pn-radius-full);
+  background:var(--pn-bg-tag);color:var(--pn-text-muted);font-size:11px;font-weight:700;}
+.vrules-page .note-sup div {
+
+font-size:var(--pn-text-sm);line-height:1.7;color:var(--pn-text-muted);}
+.vrules-page .note-sup b {
+
+color:var(--pn-text-sub);}
+.vrules-page .ltr {
+
+margin-bottom:var(--pn-space-5);border:1px solid var(--pn-border-soft);
+  border-radius:var(--pn-radius-lg);background:var(--pn-bg-card);box-shadow:var(--pn-shadow-sm);
+  overflow:hidden;transition:box-shadow .18s,border-color .18s;}
+.vrules-page .ltr:hover {
+
+box-shadow:var(--pn-shadow-md);border-color:var(--pn-primary-soft-strong);}
+.vrules-page .ltr-head {
+
+display:flex;align-items:center;gap:var(--pn-space-3);
+  padding:var(--pn-space-3) var(--pn-space-4);background:var(--pn-bg-inset);
+  border-bottom:1px solid var(--pn-border-soft);}
+.vrules-page .ltr-badge {
+
+display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;
+  min-width:46px;height:46px;padding:0 10px;border-radius:var(--pn-radius-md);
+  background-image:var(--pn-btn-grad);color:#fff;
+  font-family:var(--pn-font-display);font-size:var(--pn-text-xl);}
+.vrules-page .ltr-head h2 {
+
+font-family:var(--pn-font-display);font-size:var(--pn-text-xl);font-weight:400;
+  color:var(--pn-text-strong);}
+.vrules-page .ltr-head .cnt {
+
+margin-left:auto;font-size:var(--pn-text-xs);color:var(--pn-text-muted);}
+.vrules-page .snd-group {
+
+display:flex;align-items:flex-start;gap:var(--pn-space-3);
+  padding:var(--pn-space-3) 0;border-bottom:1px solid var(--pn-border-soft);}
+.vrules-page .snd-group:last-child {
+
+border-bottom:none;}
+.vrules-page .snd-label {
+
+flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;
+  min-width:66px;height:38px;padding:0 10px;border-radius:var(--pn-radius-md);
+  font-size:var(--pn-text-md);font-weight:700;letter-spacing:.02em;}
+.vrules-page .snd-items {
+
+flex:1;min-width:0;}
+.vrules-page .snd-items .rule {
+
+padding:6px 0;}
+.vrules-page .blk {
+
+margin-bottom:var(--pn-space-4);border:1px solid var(--pn-border-soft);
+  border-radius:var(--pn-radius-lg);background:var(--pn-bg-card);box-shadow:var(--pn-shadow-sm);
+  overflow:hidden;transition:box-shadow .18s,border-color .18s;}
+.vrules-page .blk:hover {
+
+box-shadow:var(--pn-shadow-md);border-color:var(--pn-primary-soft-strong);}
+.vrules-page .blk-head {
+
+display:flex;align-items:center;gap:var(--pn-space-3);
+  padding:var(--pn-space-3) var(--pn-space-4);background:var(--pn-bg-inset);
+  border-bottom:1px solid var(--pn-border-soft);}
+.vrules-page .blk-letter {
+
+display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;
+  min-width:34px;height:34px;padding:0 8px;border-radius:var(--pn-radius-md);
+  background:var(--pn-primary);color:var(--pn-primary-contrast);
+  font-family:var(--pn-font-display);font-size:var(--pn-text-lg);}
+.vrules-page .blk-head h3 {
+
+font-size:var(--pn-text-md);font-weight:700;color:var(--pn-text-strong);}
+.vrules-page .blk-head .cnt {
+
+margin-left:auto;font-size:var(--pn-text-xs);color:var(--pn-text-muted);}
+.vrules-page .rule {
+
+display:flex;align-items:flex-start;gap:var(--pn-space-3);
+  padding:var(--pn-space-2) 0;border-bottom:1px dashed var(--pn-border-soft);}
+.vrules-page .rule:last-of-type {
+
+border-bottom:none;}
+.vrules-page .ph {
+
+flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;
+  min-width:56px;height:32px;padding:0 9px;border-radius:var(--pn-radius-sm);
+  font-size:var(--pn-text-sm);font-weight:700;letter-spacing:.02em;}
+.vrules-page .ph-long {
+
+background:var(--pn-lemon-soft);color:#9A6A00;}
+.vrules-page .ph-short {
+
+background:var(--pn-mint-soft);color:#0E8A66;}
+.vrules-page .ph-weak {
+
+background:var(--pn-lilac-soft);color:#6D43D6;}
+.vrules-page .ph-back {
+
+background:var(--pn-peach-soft);color:#C74A6B;}
+.vrules-page .ph-clear {
+
+background:var(--pn-primary-soft);color:var(--pn-primary-deep);}
+.vrules-page .ph-voice {
+
+background:rgba(224,58,90,.12);color:#B62A48;}
+.vrules-page .ph-silent {
+
+background:var(--pn-bg-tag);color:var(--pn-text-muted);}
+.vrules-page .r-main {
+
+flex:1;min-width:0;}
+.vrules-page .r-cond {
+
+font-size:var(--pn-text-base);color:var(--pn-text);line-height:1.6;}
+.vrules-page .r-eg {
+
+margin-top:3px;display:flex;flex-wrap:wrap;gap:5px 8px;}
+.vrules-page .r-eg .w {
+
+font-size:var(--pn-text-sm);color:var(--pn-text-sub);}
+.vrules-page .r-eg .w i {
+
+font-style:normal;color:var(--pn-text-faint);font-size:11px;margin-left:2px;}
+.vrules-page .r-eg .lead {
+
+font-size:11px;color:var(--pn-text-faint);align-self:center;}
+.vrules-page .except {
+
+display:flex;gap:var(--pn-space-2);margin-top:var(--pn-space-2);
+  padding:var(--pn-space-2) var(--pn-space-3);border-radius:var(--pn-radius-md);
+  background:var(--pn-peach-soft);font-size:var(--pn-text-sm);line-height:1.65;}
+.vrules-page .except .badge {
+
+flex:0 0 auto;align-self:flex-start;padding:2px 9px;border-radius:var(--pn-radius-full);
+  background:var(--pn-danger);color:#fff;font-size:11px;font-weight:700;}
+.vrules-page .except p {
+
+color:var(--pn-text);}
+.vrules-page .except b {
+
+color:var(--pn-text-strong);font-weight:700;}
+.vrules-page .except .ipa {
+
+font-weight:700;color:#C74A6B;}
+.vrules-page .except s {
+
+color:var(--pn-text-muted);text-decoration:line-through;}
+.vrules-page .confuse {
+
+margin-top:var(--pn-space-3);border-radius:var(--pn-radius-md);overflow:hidden;
+  border:1px solid var(--pn-peach-soft);background:var(--pn-peach-soft);}
+.vrules-page .confuse-hd {
+
+display:flex;align-items:center;gap:var(--pn-space-2);
+  padding:6px var(--pn-space-3);background:rgba(255,159,178,.10);
+  border-bottom:1px solid var(--pn-peach-soft);}
+.vrules-page .confuse-hd .badge {
+
+padding:2px 9px;border-radius:var(--pn-radius-full);
+  background:var(--pn-danger);color:#fff;font-size:11px;font-weight:700;}
+.vrules-page .confuse-hd .t {
+
+font-size:var(--pn-text-xs);color:var(--pn-text-sub);}
+.vrules-page .confuse-bd {
+
+padding:var(--pn-space-2) var(--pn-space-3);}
+.vrules-page .cf-row {
+
+display:flex;align-items:center;gap:var(--pn-space-2);padding:5px 0;flex-wrap:wrap;}
+.vrules-page .cf-row+.cf-row {
+
+border-top:1px dashed var(--pn-peach-soft);}
+.vrules-page .cf-side {
+
+display:inline-flex;align-items:baseline;gap:6px;}
+.vrules-page .cf-side b {
+
+font-size:var(--pn-text-base);font-weight:700;color:var(--pn-text-strong);}
+.vrules-page .cf-side .ipa {
+
+font-size:var(--pn-text-sm);color:#C74A6B;font-weight:600;}
+.vrules-page .cf-vs {
+
+font-size:var(--pn-text-xs);color:var(--pn-text-faint);font-weight:700;}
+.vrules-page .triple {
+
+display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--pn-space-2);margin-top:var(--pn-space-2);}
+.vrules-page .triple .t {
+
+padding:var(--pn-space-2) var(--pn-space-3);border-radius:var(--pn-radius-md);
+  background:var(--pn-bg-inset);font-size:var(--pn-text-sm);line-height:1.6;}
+.vrules-page .triple .t b {
+
+display:block;color:var(--pn-primary-deep);margin-bottom:2px;}
+.vrules-page .triple .t small {
+
+color:var(--pn-text-sub);}
+@media(max-width:1199px) {
+.vrules-page .triple {
+
+grid-template-columns:repeat(2,minmax(0,1fr));}
+
+}
+@media(max-width:820px) {
+.vrules-page .triple {
+
+grid-template-columns:minmax(0,1fr);}
+
+}
+
+/* ============================================================
+   右侧字母内容重排版 + pill 化覆盖（对齐 PhrasePage 卡片质感）
+   放在原型样式之后，确保覆盖生效（不锚点停留高亮）
+   ============================================================ */
+/* 字母卡片 = 大圆角卡片 + 柔和阴影 + 悬停上浮 */
+.vrules-page .ltr {
+  margin-bottom: var(--pn-space-4);
+  border: 1px solid var(--pn-border-soft);
+  border-radius: var(--pn-radius-lg);
+  background-color: var(--pn-bg-card);
+  box-shadow: var(--pn-shadow-sm);
+  overflow: hidden;
+  transition: transform var(--pn-duration-fast) var(--pn-ease-bounce),
+              box-shadow var(--pn-duration-fast) var(--pn-ease-standard),
+              border-color var(--pn-duration-fast) var(--pn-ease-standard);
+}
+.vrules-page .ltr:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--pn-shadow-card-hover);
+  border-color: var(--pn-primary-soft-strong);
+}
+/* 刻意不写 scrollspy 命中高亮：用户不需要锚点停留提示 */
+
+/* 大标题序号：group-head 已由竖条 .bar 换成与 chapter-head 一致的方块序号 .idx。
+   原型只给 .chapter-head .idx 定义了外观，这里补 .group-head .idx。 */
+.vrules-page .group-head .idx {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--pn-radius-md);
+  background-image: var(--pn-btn-grad);
+  color: #fff;
+  font-family: var(--pn-font-display);
+  font-size: var(--pn-text-md);
+}
+
+/* 卡片头：字母徽章（渐变方块）+ 统计 */
+.vrules-page .ltr-head {
+  display: flex;
+  align-items: center;
+  gap: var(--pn-space-3);
+  padding: var(--pn-space-3) var(--pn-space-4);
+  background-color: var(--pn-bg-inset);
+  border-bottom: 1px solid var(--pn-border-soft);
+}
+.vrules-page .ltr-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  min-width: 46px;
+  height: 46px;
+  padding: 0 10px;
+  border-radius: var(--pn-radius-md);
+  background-image: var(--pn-btn-grad);
+  color: #fff;
+  font-family: var(--pn-font-display);
+  font-size: var(--pn-text-xl);
+}
+.vrules-page .ltr-head .cnt { margin-left: auto; font-size: var(--pn-text-xs); color: var(--pn-text-muted); }
+
+/* 读音分组：左侧读音徽章 + 右侧规则条并排 */
+.vrules-page .snd-group {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--pn-space-3);
+  padding: var(--pn-space-3) var(--pn-space-4) 0;
+  border-bottom: 1px solid var(--pn-border-soft);
+}
+.vrules-page .snd-group:last-child { border-bottom: none; }
+.vrules-page .snd-items { flex: 1; min-width: 0; }
+
+/* 规则行 pill：圆角标签底 + 悬停染蓝（对齐 PhrasePage .knowledge>p） */
+.vrules-page .snd-items .rule,
+.vrules-page .blk-body .rule {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--pn-space-3);
+  border-radius: var(--pn-radius-md);
+  background-color: var(--pn-bg-tag);
+  /* 上下留白从 8px 提到 14px：字号放大后原文案贴边、显拥挤 */
+  padding: 14px var(--pn-space-3);
+  margin-bottom: var(--pn-space-3);
+  border-bottom: none;
+  transition: background-color var(--pn-duration-fast) var(--pn-ease-standard);
+}
+.vrules-page .snd-items .rule:hover,
+.vrules-page .blk-body .rule:hover { background-color: var(--pn-primary-soft); }
+/* 不写 rule:last-child{margin-bottom:0}：每条 rule 是 snd-items 唯一子元素，
+   会被误判为 last-child 导致条间无间距。条间间距由 margin-bottom 提供，
+   整体底部由 snd-group 的 padding 收口，不会有多余空白。 */
+
+/* ============================================================
+   学习内容字号放大（护眼）：正文 14→16、例词/读音 13→15、音标注释 11→13。
+   标题层级与配色不变；只覆盖学习时逐字阅读的正文，不动统计/徽章标签。
+   ============================================================ */
+/* 字母卡片：规则说明 / 例词 / 音标 */
+.vrules-page .r-cond { font-size: var(--pn-text-md); line-height: 1.7; }
+.vrules-page .r-eg .w { font-size: 15px; }
+/* 例词后的音标：原来 13px + 最淡色(--pn-text-faint)，又小又看不清；
+   放大到 15px 并换成醒目的紫色(--pn-lilac)，深浅主题下都清晰易读 */
+.vrules-page .r-eg .w i {
+  font-size: 15px;
+  color: var(--pn-lilac);
+  font-weight: 600;
+  letter-spacing: .01em;
+}
+.vrules-page .r-eg .lead { font-size: 13px; }
+/* 读音徽章音标本身也偏小，从 16px 提到 18px 更醒目 */
+.vrules-page .snd-label { font-size: var(--pn-text-lg); }
+/* 特例 / 易混 / 三音对比 */
+.vrules-page .except { font-size: 15px; }
+.vrules-page .except .badge { font-size: 13px; }
+.vrules-page .confuse-hd .badge { font-size: 13px; }
+.vrules-page .confuse-hd .t { font-size: 13px; }
+.vrules-page .cf-side .ipa { font-size: 14px; }
+.vrules-page .cf-vs { font-size: 13px; }
+/* 词尾 -s 三分法：规则文字放大，eg 例词允许换行并放大（截图反馈太小） */
+.vrules-page .triple .t { font-size: var(--pn-text-md); line-height: 1.6; }
+.vrules-page .triple .t b { font-size: var(--pn-text-lg); }
+.vrules-page .triple .t small {
+  display: block;
+  margin-top: 4px;
+  font-size: 14px;
+  line-height: 1.5;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  color: var(--pn-text-sub);
+}
+/* 语音基础章节：对照表 / 定义 / 音节 / 注释 */
+.vrules-page .ct { font-size: var(--pn-text-md); }
+.vrules-page .ct thead th { font-size: var(--pn-text-sm); }
+.vrules-page .ct tbody th.k { font-size: var(--pn-text-sm); }
+.vrules-page .ct-eg .cap { font-size: 13px; }
+.vrules-page .ct-eg .w { font-size: 15px; }
+.vrules-page .ct-eg .w i { font-size: 13px; }
+.vrules-page .defrow span.t { font-size: 15px; }
+.vrules-page .syl p { font-size: 15px; }
+.vrules-page .syl .egs .lead { font-size: 13px; }
+.vrules-page .syl .egs .w { font-size: 15px; }
+.vrules-page .note-sup div { font-size: 15px; }
+.vrules-page .unit { font-size: 15px; }
+.vrules-page .op { font-size: 15px; }
+
+/* ============================================================
+   所有内容块统一上下留白：原型里 5–9px 的贴边 padding 提到 14px，
+   与字母规则卡(.rule)一致；只改上下 padding，横向排版/配色/字号不动。
+   ============================================================ */
+/* 语音基础：逐项对照盒 / 定义分类盒 */
+.vrules-page .box-hd { padding-top: 14px; padding-bottom: 14px; }
+.vrules-page .box-bd { padding-top: 14px; }
+/* 对照表单元格 / 例词行 */
+.vrules-page .ct th, .vrules-page .ct td { padding-top: 13px; padding-bottom: 13px; }
+.vrules-page .ct-eg { padding-top: 12px; padding-bottom: 12px; }
+/* 定义行 / 音节卡 / 补充注释 */
+.vrules-page .defrow { padding-top: 14px; padding-bottom: 14px; }
+.vrules-page .syl { padding-top: 14px; padding-bottom: 14px; }
+.vrules-page .note-sup { padding-top: 14px; padding-bottom: 14px; }
+/* 字母卡片：读音组 / 特例框 */
+.vrules-page .snd-group { padding-top: 12px; }
+.vrules-page .except { padding-top: 14px; padding-bottom: 14px; }
+/* 易混对比 / 三音对比 */
+.vrules-page .confuse-hd { padding-top: 14px; padding-bottom: 14px; }
+.vrules-page .confuse-bd { padding-top: 14px; padding-bottom: 14px; }
+.vrules-page .cf-row { padding-top: 12px; padding-bottom: 12px; }
+.vrules-page .triple .t { padding-top: 14px; padding-bottom: 14px; }
+
+/* ============================================================
+   语音基础板块外观统一为字母卡风格（大圆角卡片 + 徽章头）
+   原 .topic 是裸块、.topic-hd 是竖线大数字、.box 自带卡片边框 → 与字母卡两种风格。
+   统一为：.topic=大圆角卡片(hover上浮)、.topic-hd=徽章头(渐变方块序号)、
+   .box 去边框融入卡片内部（避免卡片套卡片）。
+   ============================================================ */
+.vrules-page .topic {
+  margin-bottom: var(--pn-space-5);
+  border: 1px solid var(--pn-border-soft);
+  border-radius: var(--pn-radius-lg);
+  background-color: var(--pn-bg-card);
+  box-shadow: var(--pn-shadow-sm);
+  overflow: hidden;
+  transition: transform var(--pn-duration-fast) var(--pn-ease-bounce),
+              box-shadow var(--pn-duration-fast) var(--pn-ease-standard),
+              border-color var(--pn-duration-fast) var(--pn-ease-standard);
+}
+.vrules-page .topic:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--pn-shadow-card-hover);
+  border-color: var(--pn-primary-soft-strong);
+}
+/* 主题头 = 徽章头：去左竖线，序号改渐变方块（仿 .ltr-badge），背景 inset */
+.vrules-page .topic-hd {
+  margin: 0;
+  padding: var(--pn-space-3) var(--pn-space-4);
+  border-left: none;
+  border-radius: 0;
+  background-color: var(--pn-bg-inset);
+  border-bottom: 1px solid var(--pn-border-soft);
+}
+.vrules-page .topic-hd .tno {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 46px;
+  height: 46px;
+  padding: 0;
+  border-radius: var(--pn-radius-md);
+  background-image: var(--pn-btn-grad);
+  color: #fff;
+  font-size: var(--pn-text-xl);
+  line-height: 1;
+}
+/* 内部 box 去边框/阴影，融入 .topic 卡片，避免卡片套卡片 */
+.vrules-page .topic .box {
+  border: none;
+  box-shadow: none;
+  border-radius: 0;
+  background: transparent;
+}
+.vrules-page .topic .box-hd {
+  background-color: transparent;
+  border-bottom: 1px dashed var(--pn-border-soft);
+}
+
+/* 通用例词行 eg.（原仅 .syl .egs 定义；新增的「2 闭音节 eg.」不在 .syl 内，需通用样式） */
+.vrules-page .egs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  align-items: center;
+  margin-top: var(--pn-space-2);
+}
+.vrules-page .egs .lead { font-size: 13px; color: var(--pn-text-faint); }
+.vrules-page .egs .w { font-size: 15px; font-weight: 600; color: var(--pn-text-strong); }
+
+/* ============================================================
+   所有发音统一为当前主题色 --pn-primary（用户要求，放最后覆盖）：
+   读音徽章 .snd-label.ph-*（原黄/绿/紫/粉/红/灰 6 色）、例词后音标 <i>、
+   特例/易混 .ipa、词尾三分法 .triple .t b 全部改为主题色，配色一致。
+   ============================================================ */
+/* 读音徽章：所有 ph-* 分类的彩色底+彩色字，统一为主题色软底+主题色字 */
+.vrules-page .snd-label,
+.vrules-page .snd-label.ph-long,
+.vrules-page .snd-label.ph-short,
+.vrules-page .snd-label.ph-weak,
+.vrules-page .snd-label.ph-back,
+.vrules-page .snd-label.ph-clear,
+.vrules-page .snd-label.ph-voice,
+.vrules-page .snd-label.ph-silent {
+  background-color: var(--pn-primary-soft) !important;
+  color: var(--pn-primary) !important;
+}
+/* 例词后音标 <i>：覆盖上一轮的紫色，统一主题色 */
+.vrules-page .r-eg .w i,
+.vrules-page .ct-eg .w i {
+  color: var(--pn-primary) !important;
+}
+/* 特例框 / 易混对比里的音标、词尾三分法音标 */
+.vrules-page .except .ipa,
+.vrules-page .cf-side .ipa,
+.vrules-page .triple .t b {
+  color: var(--pn-primary) !important;
+}
+
+/* ============================================================
+   发音字体统一 + eg 标签放大（用户反馈）：
+   「重读例词」里的音标原来是 13px/400，字母卡里是 15px/600，
+   两处观感不一致；这里统一所有例词后 <i> 的字体样式。
+   eg. 标签原为 11–13px，统一放大到 15px 并加粗，改用次级文字色。
+   ============================================================ */
+.vrules-page .r-eg .w i,
+.vrules-page .ct-eg .w i {
+  font-family: inherit;
+  font-style: normal;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: .01em;
+  margin-left: 3px;
+  color: var(--pn-primary) !important;
+}
+.vrules-page .r-eg .lead,
+.vrules-page .egs .lead,
+.vrules-page .syl .egs .lead {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--pn-text-sub);
+}
+.vrules-page .ct-eg .cap {
+  font-size: 15px;
+  font-weight: 600;
+}
+.vrules-page .triple .t small {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+/* ============================================================
+   读音徽章宽度统一（用户反馈）：
+   「不发音」三个字会把 min-width:66px 的徽章撑到约 75px，
+   其他音标徽章仍是 66px，导致右侧规则内容起点参差不齐。
+   改为固定 80px（含 padding），所有发音组右栏严格对齐。
+   ============================================================ */
+.vrules-page .snd-label {
+  flex: 0 0 80px;
+  width: 80px;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+/* ============================================================
+   搜索无匹配结果：右侧给明确提示，左侧保留一个空白圆形按钮占位。
+   空按钮不响应点击，也不套用 hover/active 的染色和阴影。
+   ============================================================ */
+.vrules-page .vrules-empty {
+  font-size: var(--pn-text-sm);
+  color: var(--pn-text-faint);
+  padding: var(--pn-space-2) var(--pn-space-3);
+}
+.vrules-page .vrules-type ol li.vrules-empty-anchor,
+.vrules-page .vrules-type ol li.vrules-empty-anchor:hover {
+  background-color: var(--pn-bg-hover);
+  color: transparent;
+  box-shadow: none;
+  transform: none;
+  cursor: default;
+  pointer-events: none;
+}

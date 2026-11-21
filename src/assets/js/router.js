@@ -18,6 +18,12 @@ const routes = [
     // 懒加载：只有路由到 NotePage 时才加载该组件
     component: () => import('../views/NotePage.vue'),
   },
+  {
+    path: '/vrules',
+    name: 'vrules',
+    // 发音规则页：懒加载，内容待实现（先占位空壳）
+    component: () => import('../views/VRulesPage.vue'),
+  },
 ]
 
 const router = createRouter({

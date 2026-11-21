@@ -594,6 +594,7 @@ const route = useRoute()
 const navItems = [
   { label: '常规短语', icon: 'ChatDotRound', path: '/phrase' },
   { label: '英语笔记', icon: 'Notebook', path: '/note' },
+  { label: '发音规则', icon: 'Headset', path: '/vrules' },
 ]
 // PhrasePage 刷新改用 phraseDataVersion 触发，App 不再持有子组件 ref
 
