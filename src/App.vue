@@ -37,6 +37,52 @@
           <div class="menu-list-item" @click="onMenuItem('help', openBatchPhrase)">批处理短语</div>
         </div>
       </div>
+      <!-- 右侧竖三点：更多操作，当前提供「全局搜索」（应用内搜索框，效果对齐 Ctrl+F） -->
+      <div class="menu-group menu-more">
+        <div
+          class="menu-options menu-more-btn"
+          :class="{ open: currentMenu === 'more' }"
+          title="更多"
+          @click.stop="toggleMenu('more')"
+        >
+          <span class="menu-more-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+        </div>
+        <div v-if="currentMenu === 'more'" class="menu-list menu-more-list">
+          <div class="menu-list-item" @click="onMenuItem('more', openFind)">全局搜索</div>
+        </div>
+      </div>
+
+      <!-- 【全局搜索】应用内查找栏：对齐 Ctrl+F 的高亮 / 匹配计数 / 上一下一个 -->
+      <transition name="pn-find">
+      <div
+        v-if="findShow"
+        class="pn-find-bar"
+        :class="{ 'is-dragging': findDragging }"
+        :style="findBarStyle"
+        @pointerdown="onFindBarPointerDown"
+        @pointermove="onFindBarPointerMove"
+        @pointerup="onFindBarPointerUp"
+        @pointercancel="onFindBarPointerUp"
+        @contextmenu.prevent
+      >
+        <el-input
+          ref="findInputRef"
+          v-model="findQuery"
+          class="pn-find-input"
+          placeholder="在当前页面查找"
+          :prefix-icon="Search"
+          clearable
+          @input="onFindInput"
+          @clear="onFindClear"
+          @keyup.enter.exact="onFindNext"
+          @keyup.enter.shift="onFindPrev"
+        />
+        <span class="pn-find-count">{{ findCount ? `${findCurrent} / ${findCount}` : (findQuery ? '无结果' : '') }}</span>
+        <button class="pn-find-nav" title="上一个" :disabled="!findCount" @click="onFindPrev">‹</button>
+        <button class="pn-find-nav" title="下一个" :disabled="!findCount" @click="onFindNext">›</button>
+        <button class="pn-find-close" title="关闭搜索" @click="closeFind">✕</button>
+      </div>
+      </transition>
     </div>
 
     <!-- 【发送文件面板】局域网扫描设备，选中设备发送词库 -->
@@ -103,13 +149,13 @@
 
     <!-- 主业务外壳 -->
     <div class="main-board">
-      <div class="option-panel">
+      <div class="option-panel" ref="optionPanelRef">
         <ul>
           <li
             v-for="item in navItems"
             :key="item.path"
             :class="{ active: route.path === item.path }"
-            @click="router.replace(item.path)"
+            @click="onNavClick(item.path)"
           >
             <el-icon class="nav-icon" :size="18"><component :is="item.icon" /></el-icon>
             <span class="nav-label">{{ item.label }}</span>
@@ -120,7 +166,7 @@
            切换动画：淡入 + 轻微上移缩放（out-in：旧页先离场再入场，无布局跳动）。
            v-slot + :key 写法保证按路由路径可靠触发过渡 -->
       <router-view v-slot="{ Component }">
-        <transition name="pn-page" mode="out-in" appear>
+        <transition name="pn-page" mode="out-in" appear @after-enter="onFindPageEntered">
           <component :is="Component" :key="route.path" />
         </transition>
       </router-view>
@@ -279,7 +325,12 @@
 
     <!-- 整屏编辑视图：选中笔记时以 position:fixed 全屏覆盖整个 app（含菜单栏与侧边导航），点返回即关闭；
          开合动画：上滑淡入 / 下滑淡出（覆盖层为 fixed 全屏，无需 out-in） -->
-    <transition name="pn-editor" appear>
+    <transition
+      name="pn-editor"
+      appear
+      @after-enter="onFindPageEntered"
+      @after-leave="onFindPageEntered"
+    >
       <NoteEditor v-if="selectedNote" />
     </transition>
 
@@ -336,6 +387,9 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { onBackButtonPress, exit, getVersion } from '@tauri-apps/api/app'
 // 返回键「可关闭界面」栈：界面打开入栈、关闭出栈，返回键关掉最上面一个
 import { bindBackClosable, consumeBackPress } from './assets/js/backStack.js'
+// 全局搜索（应用内查找栏，效果对齐 Ctrl+F）：DOM 文本高亮 + 匹配计数 + 上/下一个
+import { createFindInPage } from './assets/js/findInPage.js'
+import { Search } from '@element-plus/icons-vue'
 // Tauri 文件对话框：保存、打开文件
 import { save, open } from '@tauri-apps/plugin-dialog'
 // 外部状态
@@ -352,6 +406,309 @@ function toggleMenu(name: string) {
 function onMenuItem(_name: string, fn: () => void) {
   fn()
   currentMenu.value = ''
+}
+// 下拉菜单贴到屏幕左右边缘时自动往回平移，保证整块菜单可见
+watch(currentMenu, () => {
+  if (!currentMenu.value) return
+  nextTick(() => {
+    const list = document.querySelector('.menu-bar .menu-list') as HTMLElement | null
+    if (!list || !list.parentElement) return
+    const lr = list.getBoundingClientRect()
+    const gr = list.parentElement.getBoundingClientRect()
+    const margin = 8
+    let dx = 0
+    if (lr.right > window.innerWidth - margin) dx = window.innerWidth - margin - lr.right
+    else if (lr.left < margin) dx = margin - lr.left
+    if (!dx) return
+    list.style.left = `${lr.left + dx - gr.left}px`
+    list.style.right = 'auto'
+  })
+})
+
+// -------------------- 全局搜索（应用内查找栏）--------------------
+const findShow = ref(false)
+const findQuery = ref('')
+const findCount = ref(0)
+const findCurrent = ref(0)
+const findInputRef = ref<any>(null)
+const finder = createFindInPage()
+// 笔记保存时的查找处理：
+// - CSS Highlight 模式（正常路径）根本不碰编辑器 DOM，getHtml() 不会读走高亮，
+//   所以什么都不用做，保存后高亮/计数原样保留。
+// - 老 WebView 降级到 <mark> 模式时，暂时撤掉 mark 避免被 getHtml() 读走，
+//   保存后（editor.getHtml() 之后）用原词重建，用户不会看到"保存后无结果"。
+// 返回一个恢复函数，由编辑器在取完 html 后立即调用。
+provide('pnBeforeSaveFind', () => {
+  const active = findShow.value && !!findQuery.value.trim() && !!selectedNote.value
+  if (!active || finder.getMode() !== 'mark') return () => {}
+  finder.clear()
+  return () => { refreshFind(true, true) }
+})
+// 搜索范围：主业务外壳 .main-board；findInPage 内部再排除选项卡、左侧导航轨、
+// 各页面搜索框与查找栏本身，只高亮正文内容
+function findRoot(): HTMLElement | null {
+  // 打开笔记时编辑视图是整屏浮层，查找范围只限当前这一页（编辑器本身），
+  // 不搜底部被遮住的列表页；关闭后回到主业务外壳。
+  // 编辑视图只把正文编辑区算进去：标题（含跑马灯副本）、工具栏、保存按钮都不参与查找。
+  if (selectedNote.value) return document.querySelector('.note-editor .editor-body') as HTMLElement | null
+  return document.querySelector('.main-board') as HTMLElement | null
+}
+let findObserver: MutationObserver | null = null
+// 监听器当前挂在哪个根上：查找根会随「列表 ↔ 编辑视图」切换而变，
+// 仅凭 findObserver 是否存在判断是不够的（老监听器还挂在被遮住的列表页上）。
+let findObservedRoot: HTMLElement | null = null
+let findRecalcTimer: number | null = null
+let suppressFindObserver = false
+// 上次重查时查找根的纯文本：<mark> 的插入/还原不会改变 textContent，
+// 用它判断"内容真的变了"，避免编辑器与查找互相触发重算的死循环。
+let findRootText = ''
+// 切换选项卡期间暂停内容变化重算：out-in 过渡中旧页先离场、新页后入场，
+// 等新页真正入场后再统一重查，避免搜到空 DOM 或在过渡中闪烁计数。
+let findPendingRouteSwitch = false
+let findSwitchFallbackTimer: number | null = null
+// 程序化滚动（下一个/上一个、首次命中）期间不要被滚动同步抢走当前命中
+let suppressScrollSyncUntil = 0
+function refreshFind(keepCurrent = false, silent = false) {
+  // 每次查找都确认监听器挂在当前的查找根上。这样无论查找栏是从菜单栏、
+  // 工具栏按钮还是 Ctrl+F 唤起，也无论唤起前是否已打开笔记，正文变化都能重算。
+  watchFindContent()
+  // 保留用户滚动到的相对序号；内容新增/删减后 clamp 到新的总数
+  const keep = keepCurrent ? Math.max(0, findCurrent.value - 1) : 0
+  suppressFindObserver = true
+  suppressScrollSyncUntil = Date.now() + (silent ? 150 : 500)
+  try {
+    const root = findRoot()
+    findRootText = root ? (root.textContent || '') : ''
+    // 笔记编辑区用 CSS Highlight（不碰 DOM，打字不扰光标）；其它页用 <mark>
+    const r = finder.find(root, findQuery.value, keep, silent, !!selectedNote.value)
+    findCount.value = r.count
+    findCurrent.value = r.current
+    // 短语页用滑动窗口（滚到底追加、滚过阈值裁头），重算后原来的序号可能落到
+    // 已滚走的位置 → 用户看不到当前命中（"找不到最后一个 a"）。此时不反向滚动，
+    // 而是把当前命中重新锚定到用户正在看的那个匹配项，计数随之更新。
+    // 笔记编辑区例外：用户正盯着正文看，重算后要保持原来选中的那一项，
+    // 既不反向滚动也不按视口重锚（否则打字时高亮乱跳）。
+    if (r.count && !finder.isActiveVisible() && !selectedNote.value) {
+      if (keepCurrent) syncFindCurrentToViewport()
+      else finder.scrollActiveIntoView('auto')
+    }
+  } finally {
+    // 自己插入/还原 mark 也会触发 MutationObserver，抑制到下一个宏任务再解除
+    window.setTimeout(() => { suppressFindObserver = false }, 0)
+  }
+}
+// 正文内容变化（增删词条、展开折叠、分页加载等）后自动重跑查找，
+// 保留当前命中的相对位置，只重算总数和它在其中排第几
+function watchFindContent() {
+  const root = findRoot()
+  if (!root) return
+  // 根变了（例如先打开笔记、再唤起查找栏）就先断开旧根再重挂，
+  // 不能因为「已经有监听器」就直接返回——那会一直盯着旧页面。
+  if (findObserver && findObservedRoot === root) return
+  if (findObserver) { findObserver.disconnect(); findObserver = null }
+  findObservedRoot = root
+  findObserver = new MutationObserver(() => {
+    if (suppressFindObserver || findPendingRouteSwitch || !findShow.value || !findQuery.value.trim()) return
+    // 只是查找自身在插入/还原 <mark>，纯文本没变 → 不算内容变化，跳过
+    const root = findRoot()
+    if (root && (root.textContent || '') === findRootText) return
+    if (findRecalcTimer !== null) clearTimeout(findRecalcTimer)
+    findRecalcTimer = window.setTimeout(() => {
+      findRecalcTimer = null
+      if (!findPendingRouteSwitch && findShow.value && findQuery.value.trim()) refreshFind(true, true)
+    }, 120)
+  })
+  findObserver.observe(root, { childList: true, subtree: true, characterData: true })
+}
+function stopWatchFindContent() {
+  if (findRecalcTimer !== null) { clearTimeout(findRecalcTimer); findRecalcTimer = null }
+  if (findObserver) { findObserver.disconnect(); findObserver = null }
+  findObservedRoot = null
+}
+// 查找根随页面切换（列表 ↔ 编辑视图）而变，监听器要跟着重新挂到新根上，
+// 否则编辑正文变化时不会重算。
+function rebindFindRoot() {
+  stopWatchFindContent()
+  watchFindContent()
+}
+// 页面切换动画结束后，用原关键词在新页面重新查找。
+// 查找栏始终保持打开——只有用户点关闭 / Esc 才算手动关闭。
+function onFindPageEntered() {
+  if (findSwitchFallbackTimer !== null) { clearTimeout(findSwitchFallbackTimer); findSwitchFallbackTimer = null }
+  if (!findPendingRouteSwitch) return
+  findPendingRouteSwitch = false
+  if (findShow.value && findQuery.value.trim()) {
+    rebindFindRoot()
+    refreshFind()
+  }
+}
+
+// 用户自己滚动时：把"当前命中"更新为滚动容器内最靠近视口上部的可见命中，
+// 且只改高亮、不反向滚动；之后的「下一个/上一个」从这个位置继续。
+let findScrollTimer: number | null = null
+let findScrollRoot: HTMLElement | null = null
+function scrollContainerOf(el: HTMLElement, root: HTMLElement): HTMLElement {
+  let p = el.parentElement
+  while (p && p !== root.parentElement) {
+    const cs = getComputedStyle(p)
+    if (/(auto|scroll|overlay)/.test(cs.overflowY) || /(auto|scroll|overlay)/.test(cs.overflowX)) return p
+    if (p === root) break
+    p = p.parentElement
+  }
+  return root
+}
+function syncFindCurrentToViewport() {
+  const root = findRoot()
+  if (!root) return
+  // Highlight 模式没有 <mark> 节点，用查找模块提供的命中位置；<mark> 模式仍走 DOM 查询
+  const hits = finder.getMode() === 'highlight'
+    ? finder.getHitBoxes()
+    : Array.from(root.querySelectorAll('mark.pn-find-mark')).map((m) => ({ box: m.getBoundingClientRect(), el: m as HTMLElement }))
+  if (!hits.length) return
+  let bestIdx = -1
+  let bestScore = Infinity
+  hits.forEach(({ box, el }, idx) => {
+    if (!box.width && !box.height) return
+    const cb = scrollContainerOf(el, root).getBoundingClientRect()
+    if (box.bottom < cb.top + 2 || box.top > cb.bottom - 2) return
+    // 视口上部 1/5 处作为参照，取最接近它的可见命中
+    const score = Math.abs((box.top + box.bottom) / 2 - (cb.top + Math.min(80, cb.height * 0.2)))
+    if (score < bestScore) { bestScore = score; bestIdx = idx }
+  })
+  if (bestIdx < 0 || finder.result().current === bestIdx + 1) return
+  finder.setActiveSilent(bestIdx)
+  findCurrent.value = bestIdx + 1
+}
+function onFindScroll() {
+  if (!findShow.value || !findQuery.value.trim()) return
+  if (Date.now() < suppressScrollSyncUntil || findScrollTimer !== null) return
+  // 用定时器节流而非 rAF：后台/无头环境里 rAF 可能被挂起，定时器更可靠
+  findScrollTimer = window.setTimeout(() => {
+    findScrollTimer = null
+    if (Date.now() < suppressScrollSyncUntil) return
+    syncFindCurrentToViewport()
+  }, 50)
+}
+function onFindInput() { refreshFind() }
+// Element Plus 内置清空按钮：清空后清掉高亮/计数并把焦点还给输入框，方便直接输下一个词
+function onFindClear() {
+  nextTick(() => {
+    refreshFind()
+    findInputRef.value?.focus?.()
+  })
+}
+// 导航：单次跳转用平滑动画，快速连点由 findInPage 自动降级为即时滚动。
+// 平滑滚动期间不要被滚动同步抢走当前命中；动画结束后再兜底检查一次是否真的
+// 到达了目标（跨容器/长距离时 smooth 可能被打断），快速连点则立即检查。
+let findNavFallbackTimer: number | null = null
+function navigateFind(dir: 1 | -1) {
+  if (findNavFallbackTimer !== null) { clearTimeout(findNavFallbackTimer); findNavFallbackTimer = null }
+  const r = dir > 0 ? finder.next() : finder.prev()
+  // ensureFresh 可能因滑动窗口裁剪而重查，计数也要跟着更新
+  findCount.value = r.count
+  findCurrent.value = r.current
+  const smooth = r.behavior === 'smooth'
+  suppressScrollSyncUntil = Date.now() + (smooth ? 900 : 400)
+  const check = () => {
+    findNavFallbackTimer = null
+    if (r.count && !finder.isActiveVisible()) finder.scrollActiveIntoView('auto')
+  }
+  if (smooth) findNavFallbackTimer = window.setTimeout(check, 850)
+  else check()
+}
+function onFindNext() { navigateFind(1) }
+function onFindPrev() { navigateFind(-1) }
+
+// 查找栏长按拖动：鼠标左键或手指按住空白处约 160ms 后可拖动；
+// 短距离移动视为普通点击，输入框/按钮区域不触发拖动。
+const findDragging = ref(false)
+const findBarStyle = ref<Record<string, string>>({})
+let findDragState: {
+  id: number; sx: number; sy: number; left: number; top: number
+  bar: HTMLElement; moved: boolean
+} | null = null
+let findLongPressTimer: number | null = null
+function onFindBarPointerDown(e: PointerEvent) {
+  if (e.pointerType === 'mouse' && e.button !== 0) return
+  const target = e.target as HTMLElement
+  if (target.closest('input, button, .el-input__clear, .el-input__icon')) return
+  const bar = e.currentTarget as HTMLElement
+  const host = bar.parentElement
+  if (!host) return
+  const rect = bar.getBoundingClientRect()
+  const hostRect = host.getBoundingClientRect()
+  findDragState = {
+    id: e.pointerId, sx: e.clientX, sy: e.clientY,
+    left: rect.left - hostRect.left, top: rect.top - hostRect.top,
+    bar, moved: false
+  }
+  if (findLongPressTimer !== null) clearTimeout(findLongPressTimer)
+  findLongPressTimer = window.setTimeout(() => {
+    const s = findDragState
+    if (!s || s.moved) return
+    findDragging.value = true
+    try { s.bar.setPointerCapture(s.id) } catch { /* 部分环境不支持捕获，忽略 */ }
+  }, 160)
+}
+function onFindBarPointerMove(e: PointerEvent) {
+  const s = findDragState
+  if (!s) return
+  if (!findDragging.value) {
+    if (Math.abs(e.clientX - s.sx) > 8 || Math.abs(e.clientY - s.sy) > 8) {
+      s.moved = true
+      if (findLongPressTimer !== null) { clearTimeout(findLongPressTimer); findLongPressTimer = null }
+    }
+    return
+  }
+  const host = s.bar.parentElement
+  if (!host) return
+  const hostRect = host.getBoundingClientRect()
+  const maxLeft = Math.max(4, hostRect.width - s.bar.offsetWidth - 4)
+  const maxTop = Math.max(4, window.innerHeight - hostRect.top - s.bar.offsetHeight - 4)
+  const left = Math.max(4, Math.min(maxLeft, s.left + e.clientX - s.sx))
+  const top = Math.max(4, Math.min(maxTop, s.top + e.clientY - s.sy))
+  findBarStyle.value = { left: `${left}px`, top: `${top}px`, right: 'auto' }
+}
+function onFindBarPointerUp() {
+  if (findLongPressTimer !== null) { clearTimeout(findLongPressTimer); findLongPressTimer = null }
+  if (findDragState && findDragging.value) {
+    try { findDragState.bar.releasePointerCapture(findDragState.id) } catch { /* 忽略 */ }
+  }
+  findDragState = null
+  findDragging.value = false
+}
+function openFind() {
+  findShow.value = true
+  findQuery.value = ''
+  currentMenu.value = ''
+  nextTick(() => {
+    findInputRef.value?.focus?.()
+  })
+}
+// 编辑器工具栏的「搜索」按钮通过事件唤起同一个查找栏（wangEditor 菜单实例内无法 inject）
+window.addEventListener('pn-open-find', openFind)
+function closeFind() {
+  findShow.value = false
+  findQuery.value = ''
+  finder.clear()
+  findCount.value = 0
+  findCurrent.value = 0
+}
+// 查找栏打开时拦截 Ctrl/Cmd+F：聚焦搜索框并全选（浏览器原生查找栏在 WebView 里不可程序化调出）
+function onGlobalKeydown(e: KeyboardEvent) {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
+    e.preventDefault()
+    if (!findShow.value) openFind()
+    else nextTick(() => {
+      const input = findInputRef.value?.input
+      if (input) { input.focus(); input.select() }
+    })
+    return
+  }
+  if (e.key === 'Escape' && findShow.value) {
+    e.preventDefault()
+    closeFind()
+  }
 }
 // -------------------- 批处理短语（帮助菜单）--------------------
 // 全局遮罩浮窗：复制提示词 → 文本框粘贴 → 录入（后端 batch_entry_phrases 单命令单事务合并入库）
@@ -584,7 +941,7 @@ function onDocClick(e: MouseEvent) {
 // Element Plus消息提示、弹窗
 import { ElMessage, ElMessageBox } from 'element-plus'
 // Vue3
-import { ref, onMounted, onUnmounted, computed } from 'vue'
+import { ref, onMounted, onUnmounted, computed, nextTick, watch, provide } from 'vue'
 // 路由：router 实例在 main.js 中通过 app.use(router) 挂载，路由表见 src/router/index.js
 import { useRouter, useRoute } from 'vue-router'
 const router = useRouter()
@@ -596,6 +953,60 @@ const navItems = [
   { label: '英语笔记', icon: 'Notebook', path: '/note' },
   { label: '发音规则', icon: 'Headset', path: '/vrules' },
 ]
+// 顶部选项卡容器（手机端横向滚动，桌面端由 CSS 变竖排侧栏）
+const optionPanelRef = ref<HTMLElement | null>(null)
+// 手机端横向选项卡：激活项贴近/越过容器左右边缘时，把整条选项卡往回平移，
+// 让它完整露出来（已完全可见时不动，避免每次点击都把整条轨道居中乱跳）。
+// 用 getBoundingClientRect 差值而非 offsetLeft，避免受定位父级影响；
+// 桌面竖排容器没有横向溢出（scrollWidth == clientWidth），函数自动跳过。
+function ensureActiveTabVisible(smooth = true) {
+  const panel = optionPanelRef.value
+  if (!panel) return
+  if (panel.scrollWidth <= panel.clientWidth + 1) return
+  const active = panel.querySelector('li.active') as HTMLElement | null
+  if (!active) return
+  const panelRect = panel.getBoundingClientRect()
+  const activeRect = active.getBoundingClientRect()
+  // 边缘安全距离：留一点余量，不让激活项紧贴裁切线
+  const edge = Math.min(24, panelRect.width * 0.15)
+  let delta = 0
+  if (activeRect.left < panelRect.left + edge) {
+    delta = activeRect.left - panelRect.left - edge
+  } else if (activeRect.right > panelRect.right - edge) {
+    delta = activeRect.right - panelRect.right + edge
+  }
+  if (Math.abs(delta) < 1) return
+  const maxScroll = panel.scrollWidth - panel.clientWidth
+  const target = Math.max(0, Math.min(maxScroll, panel.scrollLeft + delta))
+  if (Math.abs(target - panel.scrollLeft) < 1) return
+  panel.scrollTo({ left: target, behavior: smooth ? 'smooth' : 'auto' })
+}
+function onNavClick(path: string) {
+  router.replace(path)
+  // 点击当下就触发一次：路由 watch 也会调，但这里保证过渡动画期间不漏掉
+  nextTick(() => ensureActiveTabVisible(true))
+}
+// 路由变化（点击、浏览器前进后退）后，等 active 类更新再滚；冷启动在 onMounted 里单独处理
+watch(() => route.path, () => {
+  // 切换选项卡不关闭全局搜索：保留关键词与查找栏，等新页入场后重新高亮。
+  // 只暂停过渡期间的内容变化重算，避免旧页离场 / 新页未就绪时误刷新。
+  if (findShow.value && findQuery.value.trim()) {
+    findPendingRouteSwitch = true
+    if (findSwitchFallbackTimer !== null) clearTimeout(findSwitchFallbackTimer)
+    // 兜底：动画事件因故未触发时也要完成重查
+    findSwitchFallbackTimer = window.setTimeout(onFindPageEntered, 700)
+  }
+  nextTick(() => ensureActiveTabVisible(true))
+})
+// 打开 / 关闭笔记整屏编辑视图：查找栏保持打开，等浮层入场/离场后用同一关键词
+// 重新高亮，且范围只限当前那一页（见 findRoot）。只有用户手动 ✕ / Esc 才关闭。
+watch(selectedNote, (note, oldNote) => {
+  if (note === oldNote) return
+  if (!findShow.value || !findQuery.value.trim()) return
+  findPendingRouteSwitch = true
+  if (findSwitchFallbackTimer !== null) clearTimeout(findSwitchFallbackTimer)
+  findSwitchFallbackTimer = window.setTimeout(onFindPageEntered, 700)
+})
 // PhrasePage 刷新改用 phraseDataVersion 触发，App 不再持有子组件 ref
 
 // -------------------- 重复导入弹窗状态 --------------------
@@ -1336,6 +1747,8 @@ let unlisteners: UnlistenFn[] = []
 let backButtonUnlisten: (() => void) | null = null
 
 onMounted(async () => {
+  // 冷启动若停在非默认页，把对应选项卡滚进视口（无动画，避免首屏闪动）
+  nextTick(() => ensureActiveTabVisible(false))
   // 读取当前版本号供「设置 > 版本更新」展示（失败留空，不影响启动）
   getVersion().then(v => { appVersion.value = v }).catch(() => {})
   // 启动期全局初始化：弹遮罩 → 跑 ensure_init（建 init.json / 基础词迁移）→ 收遮罩。
@@ -1412,6 +1825,13 @@ onMounted(async () => {
 
   // 点击菜单栏外部时收起原生菜单
   document.addEventListener('click', onDocClick)
+  // 全局搜索快捷键：Ctrl/Cmd+F 聚焦查找栏、Esc 关闭
+  document.addEventListener('keydown', onGlobalKeydown)
+  // 正文变化时自动刷新搜索计数/高亮
+  watchFindContent()
+  // 用户滚动正文时同步"当前命中"（捕获阶段监听所有内部滚动容器）
+  findScrollRoot = findRoot()
+  if (findScrollRoot) findScrollRoot.addEventListener('scroll', onFindScroll, true)
   // 拖放高亮心跳：每 250ms 检查一次，距最后一次 dragover 超过 600ms 即熄灭
   // （离开窗口 / 松手 / 取消拖放都会停止 dragover，由它兜底收尾，不依赖 dragleave）
   batch_drag_timer = window.setInterval(() => {
@@ -1451,6 +1871,15 @@ onUnmounted(() => {
   if (batch_drag_timer !== null) clearInterval(batch_drag_timer)
   // 5. 移除菜单外部点击监听
   document.removeEventListener('click', onDocClick)
+  // 6. 移除全局搜索键盘监听，断开正文变化监听，并清理可能残留的高亮
+  document.removeEventListener('keydown', onGlobalKeydown)
+  window.removeEventListener('pn-open-find', openFind)
+  if (findScrollRoot) findScrollRoot.removeEventListener('scroll', onFindScroll, true)
+  if (findScrollTimer !== null) { clearTimeout(findScrollTimer); findScrollTimer = null }
+  if (findSwitchFallbackTimer !== null) { clearTimeout(findSwitchFallbackTimer); findSwitchFallbackTimer = null }
+  if (findNavFallbackTimer !== null) { clearTimeout(findNavFallbackTimer); findNavFallbackTimer = null }
+  stopWatchFindContent()
+  finder.clear()
 })
 
 </script>
@@ -1620,5 +2049,118 @@ a:hover {
     min-width: 0;
     margin-left: 0;
   }
+}
+
+/* ============ 右侧竖三点「更多」菜单 ============ */
+.menu-more { margin-left: auto; }
+.menu-more-btn { padding: var(--pn-space-1) var(--pn-space-2); }
+/* 竖向三点（⋮）：CSS 绘制，颜色跟随当前文字色，避免用横排的 MoreFilled */
+.menu-more-dots {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  width: 20px;
+  height: 20px;
+}
+.menu-more-dots i {
+  display: block;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background-color: currentColor;
+}
+.menu-more-list { right: 0; left: auto; }
+
+/* ============ 全局搜索栏（应用内查找，对齐 Ctrl+F）============ */
+.pn-find-bar {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: var(--pn-space-3);
+  /* 高于笔记整屏编辑视图（z-index:1000），打开文件后查找栏依然可见可操作 */
+  z-index: 1100;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: min(420px, calc(100vw - 2 * var(--pn-space-3)));
+  padding: 8px 10px;
+  /* 触摸长按拖动时阻止页面滚动抢走指针事件 */
+  touch-action: none;
+  border: 1px solid var(--pn-border);
+  border-radius: var(--pn-radius-lg);
+  background-color: var(--pn-bg-elevated, var(--pn-bg-card));
+  box-shadow: var(--pn-shadow-lg, 0 12px 32px rgba(0, 0, 0, .18));
+}
+.pn-find-input { flex: 1 1 auto; min-width: 0; }
+.pn-find-count {
+  flex: 0 0 auto;
+  min-width: 52px;
+  text-align: center;
+  font-size: var(--pn-text-sm);
+  color: var(--pn-text-sub);
+  font-variant-numeric: tabular-nums;
+}
+.pn-find-nav,
+.pn-find-close {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: var(--pn-radius-sm);
+  background: transparent;
+  color: var(--pn-text-sub);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color var(--pn-duration-fast) var(--pn-ease-standard);
+}
+/* 长按拖动中的视觉反馈 */
+.pn-find-bar.is-dragging {
+  cursor: grabbing;
+  user-select: none;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, .32);
+  border-color: var(--pn-primary);
+}
+.pn-find-nav:hover:not(:disabled),
+.pn-find-close:hover { background-color: var(--pn-primary-soft); color: var(--pn-primary-deep); }
+.pn-find-nav:disabled { opacity: .4; cursor: default; }
+.pn-find-close { font-size: 15px; }
+.pn-find-enter-active, .pn-find-leave-active { transition: opacity .15s, transform .15s; }
+.pn-find-enter-from, .pn-find-leave-to { opacity: 0; transform: translateY(-6px); }
+
+/* 查找命中高亮：mark 由 JS 插入到各子页面 DOM，这段位于非 scoped 的 <style> 块，
+   直接写全局选择器即可（切勿用 :deep()，未 scoped 时它不会被编译、规则会被浏览器丢弃） */
+/* 普通命中：主题色浅底，保证所有匹配一眼可见 */
+mark.pn-find-mark {
+  background-color: var(--pn-primary-soft-strongest, rgba(31, 166, 255, .24));
+  color: var(--pn-text);
+  border-radius: 3px;
+  padding: 0 1px;
+}
+/* 当前命中：深底反白 + 加粗 + 外圈高亮环，明显区别于其它命中 */
+mark.pn-find-mark-active {
+  position: relative;
+  z-index: 1;
+  background-color: var(--pn-primary-strong, #0A6DAF);
+  color: #fff;
+  font-weight: 700;
+  border-radius: 4px;
+  box-shadow: 0 0 0 2px var(--pn-primary, #1FA6FF), 0 2px 8px rgba(0, 0, 0, .28);
+}
+
+/* CSS Custom Highlight：笔记编辑区专用（浏览器绘制、不碰 DOM，打字不扰光标）。
+   ::highlight() 只支持 color / background-color / text-decoration / text-shadow，
+   不支持 box-shadow / font-weight，故"当前命中"改为更深的实底反白来突出。 */
+::highlight(pn-find) {
+  background-color: var(--pn-primary-soft-strongest, rgba(31, 166, 255, .24));
+  color: var(--pn-text, inherit);
+}
+::highlight(pn-find-active) {
+  background-color: var(--pn-primary-strong, #0A6DAF);
+  color: #fff;
 }
 </style>

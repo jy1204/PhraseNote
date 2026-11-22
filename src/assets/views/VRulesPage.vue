@@ -39,7 +39,7 @@
     <div class="box-bd">
     <table class="ct">
     <thead>
-    <tr><th class="k">维度</th><th class="strong">1 · 重读音节</th><th class="weak">2 · 轻度音节</th></tr>
+    <tr><th class="k">对比项</th><th class="strong">重读音节</th><th class="weak">轻度音节</th></tr>
     </thead>
     <tbody>
     <tr><th class="k">音调</th><td class="strong">高</td><td class="weak">低</td></tr>

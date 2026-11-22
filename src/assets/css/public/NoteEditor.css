@@ -14,6 +14,26 @@
     box-sizing: border-box;
     background-color: var(--pn-bg-app);
     color: var(--pn-text);
+
+    /* wangEditor 的下拉菜单 / 弹窗用组件自带的 --w-e-* 变量，默认是白底浅字，
+       且面板是工具栏的子节点、继承这里的变量。统一映射到 --pn-* 主题变量后，
+       深色模式（含各配色方案）下这些面板会跟着一起变暗。 */
+    --w-e-toolbar-bg-color: var(--pn-bg-elevated);
+    --w-e-toolbar-color: var(--pn-text);
+    --w-e-toolbar-active-bg-color: var(--pn-primary-soft);
+    --w-e-toolbar-active-color: var(--pn-text-strong);
+    --w-e-toolbar-disabled-color: var(--pn-text-faint);
+    --w-e-toolbar-border-color: var(--pn-border);
+    --w-e-textarea-bg-color: var(--pn-bg-app);
+    --w-e-textarea-color: var(--pn-text);
+    --w-e-textarea-border-color: var(--pn-border);
+    --w-e-textarea-slight-border-color: var(--pn-border-soft);
+    --w-e-textarea-slight-color: var(--pn-text-faint);
+    --w-e-textarea-slight-bg-color: var(--pn-bg-inset);
+    --w-e-textarea-selected-border-color: var(--pn-primary);
+    --w-e-textarea-handler-bg-color: var(--pn-primary);
+    --w-e-modal-button-bg-color: var(--pn-bg-inset);
+    --w-e-modal-button-border-color: var(--pn-border);
 }
 
 /* 顶部：返回 + 标题 + 保存（含安全区） */
@@ -166,4 +186,7 @@
 }
 .note-editor .w-e-modal button {
     border-radius: var(--pn-radius-md);
+    background-color: var(--pn-bg-inset) !important;
+    color: var(--pn-text) !important;
+    border-color: var(--pn-border) !important;
 }

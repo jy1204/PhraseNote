@@ -300,7 +300,9 @@ html.dark {
     background-color: var(--pn-bg-card);
     border-bottom: 1px solid var(--pn-border-soft);
     position: relative;
-    z-index: 10;
+    /* 不创建层叠上下文：让内部 .pn-find-bar 的 z-index 直接参与根上下文，
+       这样打开笔记整屏编辑视图（z-index:1000）时查找栏仍能浮在它上面。 */
+    z-index: auto;
 }
 .menu-group {
     position: relative;

@@ -1,6 +1,34 @@
 import { onBeforeUnmount, ref, shallowRef } from 'vue'
+import { ElMessage } from 'element-plus'
 import { Editor, Toolbar } from '@wangeditor/editor-for-vue'
+import { Boot } from '@wangeditor/editor'
 import '@wangeditor/editor/dist/css/style.css'
+
+// ------------------------------------------------------------
+// 富文本工具栏里的「搜索」按钮：唤起 App 的全局查找栏。
+// exec 运行在 wangEditor 菜单实例内，拿不到 Vue 的 inject，所以用自定义事件通知 App；
+// 事件名与 App.vue 的监听保持一致。
+// ------------------------------------------------------------
+const SEARCH_ICON_SVG =
+  '<svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">' +
+  '<path d="M420 30a390 390 0 1 1 0 780 390 390 0 1 1 0-780zm0 140a250 250 0 1 0 0 500 250 250 0 1 0 0-500zm180 530 100-100 290 290-100 100z"/>' +
+  '</svg>'
+
+class PnSearchMenu {
+  constructor() {
+    this.title = '搜索'
+    this.iconSvg = SEARCH_ICON_SVG
+    this.tag = 'button'
+  }
+  getValue() { return '' }
+  isActive() { return false }
+  isDisabled() { return false }
+  exec() {
+    window.dispatchEvent(new CustomEvent('pn-open-find'))
+  }
+}
+
+Boot.registerMenu({ key: 'pnSearch', factory: () => new PnSearchMenu() })
 
 // ============================================================
 // v-marquee：跑马灯自动横向滚动指令（无缝循环版）
@@ -262,8 +290,50 @@ export function useNotePage() {
   const toolbarConfig = {
     // 去掉工具栏里的「全屏」按钮（编辑器本身已是整屏，无需再放大）
     excludeKeys: ['fullScreen'],
+    // 在工具栏末尾追加自定义「搜索」按钮（与菜单栏的全局搜索同一查找栏）
+    insertKeys: { index: 100, keys: ['pnSearch'] },
   }
-  const editorConfig = { placeholder: '请输入内容...' }
+  // 图片/视频上传：项目没有笔记媒体上传接口，wangEditor 默认 server 为空、
+  // base64LimitSize=0，选完文件无处可去。改用 FileReader 读成 data URI 内联进笔记，
+  // 这样媒体随笔记内容一起保存 / 备份 / 互传，不依赖本机文件路径。
+  // 代价是大文件会撑大笔记，因此设了大小上限并给出提示。
+  const MAX_IMAGE_SIZE = 10 * 1024 * 1024
+  const MAX_VIDEO_SIZE = 50 * 1024 * 1024
+  function fileToDataUrl(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(String(reader.result || ''))
+      reader.onerror = () => reject(new Error('读取文件失败'))
+      reader.readAsDataURL(file)
+    })
+  }
+  const editorConfig = {
+    placeholder: '请输入内容...',
+    MENU_CONF: {
+      uploadImage: {
+        async customUpload(file, insertFn) {
+          if (file.size > MAX_IMAGE_SIZE) { ElMessage.error('图片不能超过 10MB'); return }
+          try {
+            const url = await fileToDataUrl(file)
+            insertFn(url, file.name, '')
+          } catch (e) {
+            ElMessage.error('图片读取失败：' + (e?.message || e))
+          }
+        },
+      },
+      uploadVideo: {
+        async customUpload(file, insertFn) {
+          if (file.size > MAX_VIDEO_SIZE) { ElMessage.error('视频不能超过 50MB'); return }
+          try {
+            const url = await fileToDataUrl(file)
+            insertFn(url, '')
+          } catch (e) {
+            ElMessage.error('视频读取失败：' + (e?.message || e))
+          }
+        },
+      },
+    },
+  }
 
   // 组件销毁时，也及时销毁编辑器
   onBeforeUnmount(() => {

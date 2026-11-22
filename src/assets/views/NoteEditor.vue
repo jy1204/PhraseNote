@@ -31,7 +31,7 @@
 
 <script setup>
   // 全屏笔记编辑视图：选中文件后由 App 整屏渲染，覆盖原 app 的菜单栏与侧边导航
-  import { watch } from 'vue'
+  import { watch, inject } from 'vue'
   import { Editor, Toolbar } from '@wangeditor/editor-for-vue'
   import { Check } from '@element-plus/icons-vue'
   import { ElMessage } from 'element-plus'
@@ -69,11 +69,21 @@
   // 切换笔记（返回历史 / 打开另一篇）时重新载入内容
   watch(selectedNote, () => { if (editorRef.value) loadContent() })
 
+  // 由 App 注入：保存前的查找处理，返回取完 html 后的恢复函数。
+  // 正常（CSS Highlight）模式是空操作；降级 <mark> 模式会临时撤掉再重建。
+  const beforeSaveFind = inject('pnBeforeSaveFind', () => () => {})
+
   // 保存：把编辑器内容写回当前笔记对象，并持久化到 note_db.db
   async function onSave() {
     if (!selectedNote.value) return
-    const ed = editorRef.value
-    const html = ed ? ed.getHtml() : valueHtml.value
+    const restoreFind = beforeSaveFind()
+    let html
+    try {
+      const ed = editorRef.value
+      html = ed ? ed.getHtml() : valueHtml.value
+    } finally {
+      restoreFind()
+    }
     selectedNote.value.content = html
     await updateNoteContentDb(selectedNote.value.id, html)
     ElMessage({ message: '已保存', type: 'success' })

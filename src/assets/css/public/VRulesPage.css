@@ -700,7 +700,7 @@ grid-template-columns:minmax(0,1fr);}
   font-size: 14px;
   line-height: 1.5;
   white-space: normal;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
   color: var(--pn-text-sub);
 }
 /* 语音基础章节：对照表 / 定义 / 音节 / 注释 */
@@ -900,4 +900,92 @@ grid-template-columns:minmax(0,1fr);}
   transform: none;
   cursor: default;
   pointer-events: none;
+}
+
+/* ============================================================
+   手机端（<768px）内容完整显示：
+   窄屏下左侧轨 + 固定 80px 读音徽章会把规则栏挤成窄条，
+   特例/长音标换行后被竖排裁切。窄屏改为：
+   1) 左侧轨道收窄，给内容区让位；
+   2) .snd-group 改为竖排，读音徽章作为 pill 独占一行；
+   3) 规则/特例文字统一允许在任意字符断行，长音标不再撑破容器。
+   ============================================================ */
+@media (max-width: 767px) {
+  .vrules-page .vrules-type {
+    width: calc(var(--pn-touch-min) + 2 * 10px);
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+  .vrules-page .vrules-knowledge {
+    padding: var(--pn-space-2) var(--pn-space-2) var(--pn-space-2) 0;
+  }
+  /* 读音徽章 + 规则：竖排，徽章 pill 化独占一行，规则占满宽度 */
+  .vrules-page .snd-group {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--pn-space-2);
+  }
+  .vrules-page .snd-label {
+    flex: 0 0 auto;
+    width: auto;
+    align-self: flex-start;
+    white-space: normal;
+  }
+  .vrules-page .snd-items { width: 100%; min-width: 0; }
+  /* 规则条内部同样竖排：清理首列占位，主内容占满整行 */
+  .vrules-page .rule { gap: 0; }
+  .vrules-page .r-main { flex: 1 1 auto; width: 100%; min-width: 0; }
+  /* 特例框：badge 固定，文字占满剩余宽度；长音标整块换行、不从中间拆开 */
+  .vrules-page .except { align-items: flex-start; flex-wrap: wrap; }
+  .vrules-page .except p { flex: 1 1 140px; min-width: 0; }
+  /* 长规则文字与长单词音标：按词/整块换行，避免音标被拆成竖排后裁切 */
+  .vrules-page .r-cond,
+  .vrules-page .r-eg,
+  .vrules-page .r-eg .w,
+  .vrules-page .ct-eg .w,
+  .vrules-page .cf-row,
+  .vrules-page .cf-side { word-break: normal; overflow-wrap: break-word; }
+  .vrules-page .r-eg { gap: 6px 10px; }
+}
+
+/* ============================================================
+   手机端换行修正（用户反馈）：
+   1) 卡头标题过长时，「分类/对比/N 个主题」等 pill 被 flex 压缩成竖排
+      （"分类"两字上下堆叠）→ 标题可折行收缩，pill 固定靠右不压缩。
+   2) 音标 /ipa/ 是整体语义，本行容不下应整块换到下一行；
+      之前 overflow-wrap:anywhere 会把音标从中间拆开，观感很差。
+   ============================================================ */
+@media (max-width: 767px) {
+  /* 卡头保持单行：标题可折行收缩，标签/统计固定靠右、绝不收缩。
+     之前用 flex-wrap 会把「对比/分类」挤到下一行甚至掉出可视区，很难看。 */
+  .vrules-page .topic-hd,
+  .vrules-page .chapter-head,
+  .vrules-page .group-head,
+  .vrules-page .ltr-head { flex-wrap: nowrap; padding-left: var(--pn-space-2); padding-right: var(--pn-space-2); gap: var(--pn-space-2); }
+  .vrules-page .topic-hd h3,
+  .vrules-page .chapter-head h2,
+  .vrules-page .group-head h2,
+  .vrules-page .ltr-head h2 { flex: 1 1 auto; min-width: 0; overflow-wrap: break-word; font-size: var(--pn-text-lg); }
+  .vrules-page .topic-hd .kind,
+  .vrules-page .chapter-head .cnt,
+  .vrules-page .group-head .cnt,
+  .vrules-page .ltr-head .cnt { flex: 0 0 auto; flex-shrink: 0; white-space: nowrap; }
+  /* 序号方块在窄屏略缩小，给标题和 pill 腾出空间 */
+  .vrules-page .topic-hd .tno,
+  .vrules-page .ltr-badge { width: 38px; height: 38px; flex: 0 0 38px; font-size: var(--pn-text-lg); }
+  .vrules-page .chapter-head .idx,
+  .vrules-page .group-head .idx { width: 30px; height: 30px; flex: 0 0 30px; font-size: var(--pn-text-sm); }
+  /* 音标/例词音标整块换行：inline-block + nowrap 使其作为整体参与换行，
+     本行放不下就落到下一行，不在音标内部拆开 */
+  .vrules-page .except .ipa,
+  .vrules-page .except s,
+  .vrules-page .r-eg .w i,
+  .vrules-page .ct-eg .w i,
+  .vrules-page .cf-side .ipa { display: inline-block; white-space: nowrap; }
+  /* 对照表默认 auto 布局会按内容把整张卡片撑出屏幕，连带把卡头 pill 挤出视口。
+     窄屏改为定宽表格 + 单元格内换行，卡片宽度始终受容器约束。 */
+  .vrules-page .vrules-scroll { overflow-x: hidden; }
+  .vrules-page .ct { table-layout: fixed; width: 100%; }
+  .vrules-page .ct th,
+  .vrules-page .ct td { overflow-wrap: break-word; word-break: normal; }
 }

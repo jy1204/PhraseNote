@@ -67,12 +67,15 @@ android {
         buildConfig = true
     }
 
-    // APK 产物统一命名为 PhraseNote.apk（冷更新配置里写死的下载文件名）
-    // 这样 tauri android build 出来直接就是 PhraseNote.apk，无需构建后手动改名
+    // 只把 release 产物改名为 PhraseNote.apk：冷更新后端按这个固定名校验/下载。
+    // debug 保持 AGP 默认名（app-{flavor}-debug.apk）——tauri android dev 热重载时，
+    // CLI 内部按硬编码的默认名去 adb install，若也改名就会 failed to stat 装不上。
     applicationVariants.all {
-        outputs.all {
-            (this as? com.android.build.gradle.api.ApkVariantOutput)?.outputFileName =
-                "PhraseNote.apk"
+        if (buildType.name == "release") {
+            outputs.all {
+                (this as? com.android.build.gradle.api.ApkVariantOutput)?.outputFileName =
+                    "PhraseNote.apk"
+            }
         }
     }
 }
