@@ -672,6 +672,8 @@ grid-template-columns:minmax(0,1fr);}
    ============================================================ */
 /* 字母卡片：规则说明 / 例词 / 音标 */
 .vrules-page .r-cond { font-size: var(--pn-text-md); line-height: 1.7; }
+/* 条件描述中的音标（如 /ŋ/、/ʃ/）不允许在斜杠处断行，避免 "读 /\n ŋ/" 这类不工整换行 */
+.vrules-page .r-cond .ipa { white-space: nowrap; }
 .vrules-page .r-eg .w { font-size: 15px; }
 /* 例词后的音标：原来 13px + 最淡色(--pn-text-faint)，又小又看不清；
    放大到 15px 并换成醒目的紫色(--pn-lilac)，深浅主题下都清晰易读 */

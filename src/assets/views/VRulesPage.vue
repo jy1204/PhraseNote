@@ -90,13 +90,13 @@
     </div>
     </div>
     <div class="defrow">
-    <span class="n">2</span><b>闭音节</b><span class="t">一个或几个辅音结尾</span>
+    <span class="n">2</span><b>闭音节</b><span class="t">辅音字母（r 除外）结尾</span>
     </div>
     <div class="tree">
     <div class="syl">
     <div class="syl-hd"><span class="tag">A</span><h4>辅音结尾</h4></div>
     <div class="formula"><span class="unit u-v">元音</span><span class="op">+</span><span class="unit u-c">辅音</span><span class="op">结尾</span></div>
-    <p>一个或几个辅音结尾的音节，元音读短音</p>
+    <p>以一个或几个辅音字母（r 除外）结尾的音节叫闭音节，其中的元音字母读短音</p>
     <div class="egs"><span class="lead">eg.</span><span class="w">sit</span><span class="w">film</span><span class="w">desk</span></div>
     </div>
     </div>
@@ -349,7 +349,7 @@
     <div class="snd-group">
     <div class="snd-label ph-back">/ŋ/</div>
     <div class="snd-items">
-    <div class="rule"><div class="r-main"><div class="r-cond">在辅音字母 k、g 或 [k] 之前读 /ŋ/</div><div class="r-eg"><span class="w">finger<i>/ˈfɪŋɡə/</i></span><span class="w">uncle<i>/ˈʌŋkl/</i></span></div></div></div>
+    <div class="rule"><div class="r-main"><div class="r-cond">在辅音字母 k、g 或 [k] 之前读 <span class="ipa">/ŋ/</span></div><div class="r-eg"><span class="w">finger<i>/ˈfɪŋɡə/</i></span><span class="w">uncle<i>/ˈʌŋkl/</i></span></div></div></div>
     </div></div>
     <div class="snd-group">
     <div class="snd-label ph-silent">不发音</div>
@@ -380,7 +380,7 @@
     <div class="snd-items">
     <div class="rule"><div class="r-main"><div class="r-cond">在轻读音节中，在 -ia 或 -io 之前读 /ʃ/</div><div class="r-eg"><span class="w">Russian<i>/ˈrʌʃn/</i></span><span class="w">discussion<i>/dɪsˈkʌʃn/</i></span></div>
     <div class="except"><span class="badge">特例</span><p><b>decision</b> 读作 <span class="ipa">/dɪˈsɪʒn/</span></p></div></div></div>
-    <div class="rule"><div class="r-main"><div class="r-cond">在轻读音节的词尾 -sure 中读 /ʃ/</div><div class="r-eg"><span class="w">pressure<i>/ˈpreʃə/</i></span></div>
+    <div class="rule"><div class="r-main"><div class="r-cond">在轻读音节的词尾 -sure 中读 <span class="ipa">/ʃ/</span></div><div class="r-eg"><span class="w">pressure<i>/ˈpreʃə/</i></span></div>
     <div class="except"><span class="badge">特例</span><p><b>-sure</b> 前是元音时读 <span class="ipa">/ʒ/</span>，如 <b>pleasure</b> <span class="ipa">/ˈpleʒə/</span></p></div></div></div>
     </div></div>
     <div class="snd-group">
@@ -395,7 +395,7 @@
     <div class="triple">
     <div class="t"><b>/s/</b>词尾是清辅音 + s<small>eg. lamps, likes</small></div>
     <div class="t"><b>/z/</b>词尾是浊辅音或元音 + s<small>eg. plays, pigs</small></div>
-    <div class="t"><b>/ɪz/</b>词尾是 /s/ /z/ /tʃ/ /dʒ/ 后，在词尾 e 后加 s<small>eg. pages, glasses, washes, catches</small></div>
+    <div class="t"><b>/ɪz/</b>词尾是 /s/ /z/ /ʃ/ /ʒ/ /tʃ/ /dʒ/ 后，在词尾 e 后加 s<small>eg. pages, glasses, washes, catches</small></div>
     </div>
     </div></div>
     </div></div>
@@ -600,17 +600,17 @@
     <div class="snd-group">
     <div class="snd-label ph-voice">/ɪɡz/</div>
     <div class="snd-items">
-    <div class="rule"><div class="r-main"><div class="r-cond">ex + 元音，且重音不在第一个音节上读 /ɪɡz/</div><div class="r-eg"><span class="w">exam<i>/ɪɡˈzæm/</i></span><span class="w">example<i>/ɪɡˈzɑːmpl/</i></span></div></div></div>
+    <div class="rule"><div class="r-main"><div class="r-cond">ex + 元音，且重音不在第一个音节上读 /ɪɡz/</div><div class="r-eg"><span class="w">exam<i>/ɪɡˈzæm/</i></span><span class="w">example<i>/ɪɡˈzɑːmpəl/</i></span></div></div></div>
     </div></div>
     <div class="snd-group">
     <div class="snd-label ph-clear">/ɪks/</div>
     <div class="snd-items">
-    <div class="rule"><div class="r-main"><div class="r-cond">ex + 辅音，且重音不在第一个音节上读 /ɪks/</div><div class="r-eg"><span class="w">excuse<i>/ɪksˈkjuːz/</i></span><span class="w">expect<i>/ɪksˈpekt/</i></span></div></div></div>
+    <div class="rule"><div class="r-main"><div class="r-cond">ex + 辅音，且重音不在第一个音节上读 /ɪks/</div><div class="r-eg"><span class="w">excuse<i>/ɪkˈskjuːs/</i></span><span class="w">expect<i>/ɪkˈspekt/</i></span></div></div></div>
     </div></div>
     <div class="snd-group">
     <div class="snd-label ph-clear">/eks/</div>
     <div class="snd-items">
-    <div class="rule"><div class="r-main"><div class="r-cond">ex 后不管什么字母，只要重音落在第一个音节上读 /eks/</div><div class="r-eg"><span class="w">exercise<i>/ˈeksəsaɪz/</i></span><span class="w">expert<i>/ˈekspɜːt/</i></span></div></div></div>
+    <div class="rule"><div class="r-main"><div class="r-cond">ex 后不管跟什么字母，只要重音落在第一个音节上读 /eks/</div><div class="r-eg"><span class="w">exercise<i>/ˈeksəsaɪz/</i></span><span class="w">expert<i>/ˈekspɜːt/</i></span></div></div></div>
     </div></div>
     </div></section>
     <section class="ltr" id="ltr-gh" v-show="isVisible('gh')" :class="{'vrules-hl': activeId === 'ltr-gh'}">
@@ -642,14 +642,14 @@
     <div class="snd-group">
     <div class="snd-label ph-back">/uː/</div>
     <div class="snd-items">
-    <div class="rule"><div class="r-main"><div class="r-cond">d、k 之前读 /uː/，food / mood / noodle 需长读</div><div class="r-eg"><span class="w">food</span><span class="w">mood</span><span class="w">noodle</span></div></div></div>
-    <div class="rule"><div class="r-main"><div class="r-cond">复合名词需短读，其余多数读 /uː/</div><div class="r-eg"><span class="w">broom</span></div></div></div>
+    <div class="rule"><div class="r-main"><div class="r-cond">d、k 之前读 /uː/，food / mood / noodle 需长读</div><div class="r-eg"><span class="w">food<i>/fuːd/</i></span><span class="w">mood<i>/muːd/</i></span><span class="w">noodle<i>/ˈnuːdl/</i></span></div></div></div>
+    <div class="rule"><div class="r-main"><div class="r-cond">复合名词需短读，其余多数读 /uː/</div><div class="r-eg"><span class="w">broom<i>/bruːm/</i></span></div></div></div>
     </div></div>
     <div class="snd-group">
     <div class="snd-label ph-short">/ʊ/</div>
     <div class="snd-items">
     <div class="rule"><div class="r-main"><div class="r-cond">t 前读 /uː/，foot 一词需短读 /ʊ/</div><div class="r-eg"><span class="w">foot<i>/fʊt/</i></span></div></div></div>
-    <div class="rule"><div class="r-main"><div class="r-cond">复合名词需短读</div><div class="r-eg"><span class="w">football</span><span class="w">bedroom</span></div></div></div>
+    <div class="rule"><div class="r-main"><div class="r-cond">复合名词需短读</div><div class="r-eg"><span class="w">football<i>/ˈfʊtbɔːl/</i></span><span class="w">bedroom<i>/ˈbedrʊm/</i></span></div></div></div>
     </div></div>
     <div class="snd-group">
     <div class="snd-label ph-short">/ʌ/</div>
@@ -660,17 +660,22 @@
     <section class="ltr" id="ltr-or" v-show="isVisible('or')" :class="{'vrules-hl': activeId === 'ltr-or'}">
     <div class="ltr-head">
     <span class="ltr-badge">or</span>
-    <span class="cnt">2 类读音</span>
+    <span class="cnt">3 类读音</span>
     </div><div class="ltr-body">
     <div class="snd-group">
     <div class="snd-label ph-back">/ɔː/</div>
     <div class="snd-items">
-    <div class="rule"><div class="r-main"><div class="r-cond">读 /ɔː/</div><div class="r-eg"><span class="w">forty<i>/ˈfɔːti/</i></span><span class="w">morning<i>/ˈmɔːnɪŋ/</i></span></div></div></div>
+    <div class="rule"><div class="r-main"><div class="r-cond">在重读音节中读 /ɔː/</div><div class="r-eg"><span class="w">forty<i>/ˈfɔːti/</i></span><span class="w">morning<i>/ˈmɔːnɪŋ/</i></span></div></div></div>
     </div></div>
     <div class="snd-group">
     <div class="snd-label ph-back">/ɜː/</div>
     <div class="snd-items">
-    <div class="rule"><div class="r-main"><div class="r-cond">读 /ɜː/</div><div class="r-eg"><span class="w">word<i>/wɜːd/</i></span><span class="w">doctor<i>/ˈdɒktə/</i></span></div></div></div>
+    <div class="rule"><div class="r-main"><div class="r-cond">在 w 后读 /ɜː/</div><div class="r-eg"><span class="w">word<i>/wɜːd/</i></span></div></div></div>
+    </div></div>
+    <div class="snd-group">
+    <div class="snd-label ph-back">/ə/</div>
+    <div class="snd-items">
+    <div class="rule"><div class="r-main"><div class="r-cond">在词尾非重读时读 /ə/</div><div class="r-eg"><span class="w">doctor<i>/ˈdɒktə/</i></span></div></div></div>
     </div></div>
     </div></section>
     <section class="ltr" id="ltr-our" v-show="isVisible('our')" :class="{'vrules-hl': activeId === 'ltr-our'}">
@@ -681,17 +686,17 @@
     <div class="snd-group">
     <div class="snd-label ph-back">/ɔː/</div>
     <div class="snd-items">
-    <div class="rule"><div class="r-main"><div class="r-cond">读 /ɔː/</div><div class="r-eg"><span class="w">course<i>/kɔːs/</i></span><span class="w">four<i>/fɔː/</i></span></div></div></div>
+    <div class="rule"><div class="r-main"><div class="r-cond">在重读音节中读 /ɔː/</div><div class="r-eg"><span class="w">course<i>/kɔːs/</i></span><span class="w">four<i>/fɔː/</i></span></div></div></div>
     </div></div>
     <div class="snd-group">
     <div class="snd-label ph-long">/aʊə/</div>
     <div class="snd-items">
-    <div class="rule"><div class="r-main"><div class="r-cond">读 /aʊə/</div><div class="r-eg"><span class="w">our<i>/aʊə/</i></span><span class="w">hour<i>/aʊə/</i></span></div></div></div>
+    <div class="rule"><div class="r-main"><div class="r-cond">词首且重读时读 /aʊə/</div><div class="r-eg"><span class="w">our<i>/ˈaʊə/</i></span><span class="w">hour<i>/ˈaʊə/</i></span></div></div></div>
     </div></div>
     <div class="snd-group">
     <div class="snd-label ph-back">/ɜː/</div>
     <div class="snd-items">
-    <div class="rule"><div class="r-main"><div class="r-cond">读 /ɜː/</div><div class="r-eg"><span class="w">journey<i>/ˈdʒɜːni/</i></span></div></div></div>
+    <div class="rule"><div class="r-main"><div class="r-cond">在重读音节中读 /ɜː/</div><div class="r-eg"><span class="w">journey<i>/ˈdʒɜːni/</i></span></div></div></div>
     </div></div>
     </div></section>
     <section class="ltr" id="ltr-ow" v-show="isVisible('ow')" :class="{'vrules-hl': activeId === 'ltr-ow'}">
